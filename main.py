@@ -3,30 +3,38 @@ import firebase_admin
 from firebase_admin import credentials, firestore
 import json
 
-# --- INICIALIZACIÓN DE FIREBASE (ULTRA-LIMPIEZA) ---
+# --- INICIALIZACIÓN DE FIREBASE (SOLUCIÓN DEFINITIVA) ---
 if not firebase_admin._apps:
     try:
-        # 1. Obtenemos el texto crudo y quitamos espacios al inicio/final
-        raw_json = st.secrets["text_secrets"]["json_key"].strip()
+        # 1. Traemos el JSON crudo
+        json_raw = st.secrets["text_secrets"]["json_key"]
+        json_info = json.loads(json_raw)
         
-        # 2. Intentamos cargar el JSON
-        json_info = json.loads(raw_json)
+        # 2. LIMPIEZA TOTAL DE LA LLAVE
+        # Quitamos espacios, saltos de línea extra y rearmamos el formato
+        pk = json_info["private_key"]
         
-        # 3. Reparación profunda de la clave privada
-        if "private_key" in json_info:
-            pk = json_info["private_key"]
-            # Reemplaza barras dobles por simples y asegura saltos de línea reales
-            pk = pk.replace("\\n", "\n").replace("\\\\n", "\n")
-            # Elimina espacios accidentales que se cuelan al copiar/pegar
-            json_info["private_key"] = pk.strip()
+        # Primero quitamos los encabezados para limpiar el interior
+        header = "-----BEGIN PRIVATE KEY-----"
+        footer = "-----END PRIVATE KEY-----"
         
-        # 4. Inicialización
+        inner_key = pk.replace(header, "").replace(footer, "").replace("\n", "").replace(" ", "").replace("\\n", "")
+        
+        # Rearmamos la llave con el formato exacto que pide Google (cada 64 caracteres un salto)
+        # Esto ignora cualquier error de "copiar y pegar" de los Secrets
+        fixed_pk = f"{header}\n"
+        for i in range(0, len(inner_key), 64):
+            fixed_pk += inner_key[i:i+64] + "\n"
+        fixed_pk += footer
+        
+        json_info["private_key"] = fixed_pk
+        
+        # 3. Inicializamos
         creds = credentials.Certificate(json_info)
         firebase_admin.initialize_app(creds)
         
     except Exception as e:
         st.error(f"❌ Error al configurar Firebase: {e}")
-        # Si falla, mostramos el error detallado para saber qué está viendo Python
         st.stop()
 
 db = firestore.client()
