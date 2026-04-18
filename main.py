@@ -166,3 +166,20 @@ if 'final' in st.session_state:
             del st.session_state.final
             if 'resultados' in st.session_state: del st.session_state.resultados
             st.rerun()
+            # --- BUSCADOR INTELIGENTE (VERSIÓN INFINITA) ---
+if st.button(f"Buscar {tipo}s"):
+    ids = ",".join([str(gens[g]) for g in seleccion_gens])
+    path = "movie" if tipo == "Película" else "tv"
+    
+    # Elegimos una página al azar para que siempre haya algo nuevo
+    pagina_random = random.randint(1, 5) 
+    url = f"https://api.themoviedb.org/3/discover/{path}?api_key={TMDB_API_KEY}&language=es-ES&with_genres={ids}&sort_by=popularity.desc&page={pagina_random}"
+    
+    vistas = obtener_vistas()
+    res = requests.get(url).json().get('results', [])
+    
+    # Filtramos: solo lo que NO esté en la lista de vistas
+    st.session_state.resultados = [c for c in res if c['id'] not in vistas]
+    
+    if not st.session_state.resultados:
+        st.warning("¡Sos un cinéfilo experto! Ya viste lo más popular de aquí. Probá cambiar de géneros o resetear.")
