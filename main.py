@@ -1,36 +1,21 @@
 import streamlit as st
 import firebase_admin
 from firebase_admin import credentials, firestore
-import json
-import re
 
-# --- INICIALIZACIÓN DE FIREBASE (BYPASS DE FORMATO) ---
+# --- INICIALIZACIÓN POR VARIABLES (MÉTODO INFALIBLE) ---
 if not firebase_admin._apps:
     try:
-        # 1. Leemos el texto crudo y limpiamos caracteres invisibles raros
-        raw_text = st.secrets["text_secrets"]["json_key"]
+        # Reconstruimos el diccionario manualmente
+        firebase_dict = {
+            "type": "service_account",
+            "project_id": st.secrets["fb_project_id"],
+            "private_key": st.secrets["fb_private_key"].replace("\\n", "\n"),
+            "client_email": st.secrets["fb_client_email"],
+            "token_uri": "https://oauth2.googleapis.com/token",
+        }
         
-        # Eliminamos caracteres de control extraños (non-breaking spaces, etc.)
-        clean_text = "".join(char for char in raw_text if ord(char) < 128)
-        
-        # 2. Cargamos el JSON
-        json_info = json.loads(clean_text)
-        
-        # 3. EXTRACCIÓN FORZADA DE LA LLAVE
-        # Buscamos el bloque entre BEGIN y END sin importar qué barras hay en el medio
-        pk_match = re.search(r"-----BEGIN PRIVATE KEY-----[\s\S]+-----END PRIVATE KEY-----", clean_text)
-        
-        if pk_match:
-            # Limpiamos la llave de cualquier ruido
-            full_pk = pk_match.group(0)
-            # Reemplazamos las barras dobles literales que pone Streamlit por saltos reales
-            full_pk = full_pk.replace("\\n", "\n")
-            json_info["private_key"] = full_pk
-        
-        # 4. Inicialización oficial
-        creds = credentials.Certificate(json_info)
+        creds = credentials.Certificate(firebase_dict)
         firebase_admin.initialize_app(creds)
-        
     except Exception as e:
         st.error(f"❌ Error de Conexión: {e}")
         st.stop()
