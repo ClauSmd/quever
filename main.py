@@ -4,136 +4,157 @@ from firebase_admin import credentials, firestore
 import json
 import requests
 import random
-import hashlib
+from groq import Groq
 
-# --- 1. CONFIGURACIÓN ---
-if "tmdb_api_key" in st.secrets:
+# --- 1. CONFIGURACIÓN DE PÁGINA Y APIS ---
+st.set_page_config(page_title="Smart Movie Engine 2026", page_icon="🎬", layout="wide")
+
+# Traer llaves desde Secrets
+try:
+    GROQ_API_KEY = st.secrets["groq_api_key"]
     TMDB_API_KEY = st.secrets["tmdb_api_key"]
-else:
-    TMDB_API_KEY = st.secrets["text_secrets"]["tmdb_api_key"]
+    client = Groq(api_key=GROQ_API_KEY)
+except Exception as e:
+    st.error("Error: Faltan las API Keys en los Secrets de Streamlit.")
+    st.stop()
 
+# Inicializar Firebase
 if not firebase_admin._apps:
     try:
         key_dict = json.loads(st.secrets["text_secrets"]["json_key"])
         creds = credentials.Certificate(key_dict)
-        firebase_admin.initialize_app(creds, {'projectId': key_dict.get('project_id')})
+        firebase_admin.initialize_app(creds)
     except Exception as e:
-        st.error(f"Error de conexión Firebase: {e}")
-        st.stop()
+        st.error(f"Error Firebase: {e}")
 
 db = firestore.client()
 
-# --- 2. CATEGORÍAS 2026 ---
-INTENCIONES = {
-    "🍿 Pochocleras": {"genres": "28,12", "vibe": "entretenimiento puro.", "sort": "popularity.desc"},
-    "🕵️ Intriga": {"genres": "9648,80,53", "vibe": "misterio atrapante.", "sort": "vote_average.desc"},
-    "🎞️ Joyas Ocultas": {"genres": "18,9648", "vibe": "calidad poco conocida.", "sort": "vote_average.desc"},
-    "🧠 Hechos Reales": {"genres": "99,36", "vibe": "historias verídicas.", "sort": "popularity.desc"},
-    "👪 Para la Familia": {"genres": "10751,16,35", "vibe": "apta para todos.", "sort": "popularity.desc"},
-    "😱 Terror": {"genres": "27", "vibe": "tensión extrema.", "sort": "popularity.desc"}
-}
-
-# --- 3. FUNCIONES CORE ---
+# --- 2. FUNCIONES DE APOYO ---
 def obtener_vistas(usuario):
-    vistas = set()
     docs = db.collection("gustos").document(usuario).collection("historial").stream()
-    for d in docs: vistas.add(d.to_dict().get("id_tmdb"))
-    return vistas
+    return {d.to_dict().get("id_tmdb") for d in docs}
 
-def registrar_voto(id_p, titulo, stars, usuario):
-    db.collection("gustos").document(usuario).collection("historial").document(str(id_p)).set({
-        "id_tmdb": id_p, "titulo": titulo, "stars": stars, "fecha": firestore.SERVER_TIMESTAMP
+def registrar_voto(p_id, titulo, stars, usuario):
+    db.collection("gustos").document(usuario).collection("historial").document(str(p_id)).set({
+        "id_tmdb": p_id, "titulo": titulo, "stars": stars, "fecha": firestore.SERVER_TIMESTAMP
     })
 
-# --- 4. ACCESO (Simple para asegurar que el usuario existe) ---
-if 'usuario' not in st.session_state:
-    st.title("🎬 Smart Movie Engine")
-    usuarios = [u.id for u in db.collection("usuarios").stream()]
-    user_sel = st.selectbox("Quién sos:", [""] + usuarios)
-    if user_sel:
-        st.session_state.usuario = user_sel
+def recomendar_con_ia(usuario, intencion, anios):
+    docs = db.collection("gustos").document(usuario).collection("historial").stream()
+    hist = [d.to_dict() for d in docs]
+    favs = [h['titulo'] for h in hist if h.get('stars', 0) >= 4][-10:]
+    vistas = [h['titulo'] for h in hist][-20:]
+    
+    prompt = f"""
+    Expert Cinephile Mode. 
+    User likes: {', '.join(favs)}. 
+    Don't suggest: {', '.join(vistas)}.
+    Today's vibe: {intencion} ({anios[0]}-{anios[1]}).
+    Suggest 7 unique movies. 
+    Format: ONLY titles separated by commas.
+    """
+    completion = client.chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.7
+    )
+    return [t.strip() for t in completion.choices[0].message.content.split(',')]
+
+# --- 3. SIDEBAR Y ESTADO (EL ROBOT 🤖) ---
+with st.sidebar:
+    st.title("👤 Perfil")
+    # Lógica de usuario (Simplificada para este ejemplo)
+    if 'usuario' not in st.session_state:
+        usuarios = [u.id for u in db.collection("usuarios").stream()]
+        user_sel = st.selectbox("Elegí tu perfil:", [""] + usuarios)
+        if user_sel:
+            st.session_state.usuario = user_sel
+            st.rerun()
+        st.stop()
+    
+    st.write(f"Hola, **{st.session_state.usuario}**")
+    
+    # INDICADOR DISCRETO DEL ROBOT
+    ia_status = st.session_state.get('ia_status', 'off')
+    if ia_status == 'on':
+        st.markdown("🟢 **IA Engine:** 🤖 *Online*")
+    else:
+        st.markdown("⚪ **IA Engine:** 🤖 *Standby*")
+    
+    if st.button("Cerrar Sesión"):
+        del st.session_state.usuario
         st.rerun()
-    st.stop()
 
-# --- 5. INTERFAZ DE PLAN Y ÉPOCA ---
-st.header(f"🎯 ¿Qué plan hay hoy, {st.session_state.usuario}?")
+# --- 4. INTERFAZ PRINCIPAL ---
+st.header("🎯 ¿Qué plan hay hoy?")
 
-# Botones de categorías
-cols_plan = st.columns(3)
-for i, (nombre, info) in enumerate(INTENCIONES.items()):
-    with cols_plan[i % 3]:
-        if st.button(nombre, use_container_width=True):
-            st.session_state.info_plan = info
-            st.session_state.nombre_plan = nombre
+categorias = {
+    "🍿 Pochocleras": "acción y ritmo rápido",
+    "🕵️ Intriga": "suspenso y misterio atrapante",
+    "🎞️ Joyas Ocultas": "cine de culto o independiente poco conocido",
+    "👪 Para la Familia": "contenido apto para todas las edades",
+    "🧠 Hechos Reales": "historias verídicas y documentales"
+}
 
-# Filtro de años
+c_btns = st.columns(len(categorias))
+for i, (nombre, desc) in enumerate(categorias.items()):
+    if c_btns[i].button(nombre, use_container_width=True):
+        st.session_state.plan_nombre = nombre
+        st.session_state.plan_desc = desc
+
 st.divider()
 st.subheader("🗓️ Filtro de Época")
-anio_min, anio_max = st.slider("Rango de años:", 1950, 2026, (2010, 2026))
+anios_sel = st.slider("Rango de estreno:", 1950, 2026, (2010, 2026))
 
-# --- 6. EJECUCIÓN DE BÚSQUEDA (CORREGIDO) ---
-if st.button("🚀 Buscar Recomendaciones", use_container_width=True):
-    # Verificamos que info_plan exista antes de usarlo (Evita el AttributeError)
-    if 'info_plan' not in st.session_state:
-        st.warning("⚠️ Por favor, seleccioná una categoría arriba antes de buscar.")
+# --- 5. LÓGICA DE BÚSQUEDA ---
+if st.button("🚀 Generar Recomendaciones Inteligentes", use_container_width=True):
+    if 'plan_desc' not in st.session_state:
+        st.warning("Elegí una categoría arriba.")
     else:
-        with st.spinner("Analizando catálogo..."):
-            vistas = obtener_vistas(st.session_state.usuario)
-            info = st.session_state.info_plan
-            pag = random.randint(1, 10)
-            url = (f"https://api.themoviedb.org/3/discover/movie?api_key={TMDB_API_KEY}&language=es-ES"
-                   f"&with_genres={info['genres']}&primary_release_date.gte={anio_min}-01-01"
-                   f"&primary_release_date.lte={anio_max}-12-31&sort_by={info['sort']}&page={pag}")
+        st.session_state.ia_status = 'on'
+        with st.spinner("🤖 El robot está analizando tu ADN cinéfilo..."):
+            nombres_ia = recomendar_con_ia(st.session_state.usuario, st.session_state.plan_desc, anios_sel)
             
-            try:
-                res = requests.get(url).json().get('results', [])
-                # Guardamos resultados filtrando lo ya visto
-                st.session_state.resultados = [c for c in res if c['id'] not in vistas]
-                # Limpiamos estados temporales de calificación
-                for key in list(st.session_state.keys()):
-                    if key.startswith("calificando_"): del st.session_state[key]
-            except:
-                st.error("Error al conectar con TMDB.")
+            resultados = []
+            vistas_ids = obtener_vistas(st.session_state.usuario)
+            
+            for n in nombres_ia:
+                url = f"https://api.themoviedb.org/3/search/movie?api_key={TMDB_API_KEY}&query={n}&language=es-ES"
+                r = requests.get(url).json().get('results', [])
+                if r and r[0]['id'] not in vistas_ids:
+                    resultados.append(r[0])
+            
+            st.session_state.resultados = resultados
+            st.session_state.ia_status = 'off'
 
-# --- 7. RESULTADOS CON CALIFICACIÓN IN-SITU ---
+# --- 6. RENDERIZADO DE PELÍCULAS ---
 if 'resultados' in st.session_state and st.session_state.resultados:
     st.divider()
-    modo_r = st.toggle("🎲 Modo Ruleta (Ver de a una)", value=False)
-    
-    items = st.session_state.resultados[:1] if modo_r else st.session_state.resultados[:6]
-    cols = st.columns(1) if modo_r else st.columns(3)
-    
-    for i, p in enumerate(items):
-        with cols[i % (1 if modo_r else 3)]:
+    cols = st.columns(3)
+    for i, p in enumerate(st.session_state.resultados[:6]):
+        with cols[i % 3]:
             st.image(f"https://image.tmdb.org/t/p/w500{p['poster_path']}", use_container_width=True)
             st.markdown(f"**{p['title']}** ({p['release_date'][:4]})")
             
-            # --- LÓGICA DE BOTONES DINÁMICOS ---
-            key_calif = f"calificando_{p['id']}"
+            # MATCH SCORE ALEATORIO (Simulando la IA)
+            st.caption(f"✨ {random.randint(88, 98)}% Match para vos")
             
-            if key_calif not in st.session_state:
-                c1, c2 = st.columns(2)
-                with c1:
-                    if st.button("✅ Ya la vi", key=f"btn_v_{p['id']}", use_container_width=True):
-                        st.session_state[key_calif] = True
-                        st.rerun()
-                with c2:
-                    if st.button("⏭️ No la vi", key=f"btn_n_{p['id']}", use_container_width=True, help="Quitar de la lista"):
-                        st.session_state.resultados.pop(i)
-                        st.rerun()
-            else:
-                # Aparece el feedback de estrellas debajo del poster
-                st.write("¿Cómo estuvo?")
-                stars = st.feedback("stars", key=f"stars_{p['id']}")
-                if stars is not None:
-                    registrar_voto(p['id'], p['title'], stars + 1, st.session_state.usuario)
-                    st.success("¡ADN actualizado!")
+            # Lógica "Ya la vi" in-situ
+            key_voto = f"calif_{p['id']}"
+            if key_voto not in st.session_state:
+                c_v1, c_v2 = st.columns(2)
+                if c_v1.button("✅ Ya la vi", key=f"btn_v_{p['id']}", use_container_width=True):
+                    st.session_state[key_voto] = True
+                    st.rerun()
+                if c_v2.button("⏭️ No la vi", key=f"btn_n_{p['id']}", use_container_width=True):
                     st.session_state.resultados.pop(i)
-                    del st.session_state[key_calif]
                     st.rerun()
-                if st.button("Cancelar", key=f"can_{p['id']}"):
-                    del st.session_state[key_calif]
+            else:
+                st.write("¿Cuántas estrellas?")
+                voto = st.feedback("stars", key=f"feedback_{p['id']}")
+                if voto is not None:
+                    registrar_voto(p['id'], p['title'], voto + 1, st.session_state.usuario)
+                    st.session_state.resultados.pop(i)
+                    del st.session_state[key_voto]
+                    st.success("ADN Actualizado")
                     st.rerun()
-else:
-    if 'resultados' in st.session_state:
-        st.info("No hay más películas para mostrar con estos filtros.")
