@@ -6,7 +6,7 @@ import requests
 import random
 import hashlib
 
-# --- CONFIGURACIÓN API ---
+# --- CONFIGURACIÓN ---
 if "tmdb_api_key" in st.secrets:
     TMDB_API_KEY = st.secrets["tmdb_api_key"]
 else:
@@ -25,21 +25,36 @@ def hash_pin(pin):
 GENEROS_MOVIE = {"Acción": 28, "Comedia": 35, "Terror": 27, "Drama": 18, "Ciencia Ficción": 878, "Suspenso": 53, "Aventura": 12}
 GENEROS_TV = {"Acción": 10759, "Comedia": 35, "Crimen": 80, "Drama": 18, "Sci-Fi & Fantasy": 10765, "Misterio": 9648}
 
-# --- SISTEMA DE FILTRADO ---
-def registrar_visto(id_tmdb, titulo, estrellas, tipo):
-    db.collection("gustos").document(st.session_state.usuario).collection("historial").document(str(id_tmdb)).set({
-        "id_tmdb": id_tmdb, "titulo": titulo, "stars": estrellas, "tipo": tipo
-    })
-
+# --- FUNCIONES DE APOYO ---
 def obtener_vistas():
     vistas = set()
-    colls = ["historial", "entrenamiento"]
-    for c in colls:
+    for c in ["historial", "entrenamiento"]:
         docs = db.collection("gustos").document(st.session_state.usuario).collection(c).stream()
         for d in docs: vistas.add(d.to_dict().get("id_tmdb"))
     return vistas
 
-# --- LOGIN (Simplificado) ---
+def registrar_voto(id_p, titulo, stars, tipo):
+    db.collection("gustos").document(st.session_state.usuario).collection("historial").document(str(id_p)).set({
+        "id_tmdb": id_p, "titulo": titulo, "stars": stars, "tipo": tipo, "fecha": firestore.SERVER_TIMESTAMP
+    })
+
+def obtener_info_extra(id_p, tipo_path):
+    # Trailers
+    url_v = f"https://api.themoviedb.org/3/{tipo_path}/{id_p}/videos?api_key={TMDB_API_KEY}&language=es-ES"
+    res_v = requests.get(url_v).json().get('results', [])
+    if not res_v: # Si no hay en español, buscamos en inglés
+        url_v = f"https://api.themoviedb.org/3/{tipo_path}/{id_p}/videos?api_key={TMDB_API_KEY}"
+        res_v = requests.get(url_v).json().get('results', [])
+    
+    # Plataformas (Watch Providers)
+    url_w = f"https://api.themoviedb.org/3/{tipo_path}/{id_p}/watch/providers?api_key={TMDB_API_KEY}"
+    res_w = requests.get(url_w).json().get('results', {}).get('AR', {}) # Filtro ARGENTINA
+    plataformas = [p['provider_name'] for p in res_w.get('flatrate', [])]
+    
+    video_key = res_v[0]['key'] if res_v else None
+    return video_key, plataformas
+
+# --- LOGIN ---
 if 'usuario' not in st.session_state:
     st.title("🎬 Que Ver - Smart Engine")
     tab1, tab2 = st.tabs(["Entrar", "Registrarse"])
@@ -47,13 +62,12 @@ if 'usuario' not in st.session_state:
         n = st.text_input("Nombre:").strip()
         p = st.text_input("PIN:", type="password")
         if st.button("Crear Perfil"):
-            if n and p:
-                db.collection("usuarios").document(n).set({"nombre": n, "pin": hash_pin(p), "onboarding_completo": False})
-                st.success("¡Registrado!")
+            db.collection("usuarios").document(n).set({"nombre": n, "pin": hash_pin(p), "onboarding_completo": False})
+            st.success("¡Registrado!")
     with tab1:
         u_list = [u.id for u in db.collection("usuarios").stream()]
         n_log = st.selectbox("Usuario:", [""] + u_list)
-        p_log = st.text_input("PIN:", type="password", key="lp")
+        p_log = st.text_input("PIN:", type="password")
         if st.button("Entrar"):
             doc = db.collection("usuarios").document(n_log).get()
             if doc.exists and doc.to_dict()['pin'] == hash_pin(p_log):
@@ -61,103 +75,100 @@ if 'usuario' not in st.session_state:
                 st.rerun()
     st.stop()
 
+# --- USO DIARIO ---
 usuario_actual = st.session_state.usuario
-user_ref = db.collection("usuarios").document(usuario_actual)
-user_data = user_ref.get().to_dict()
-
-# --- ONBOARDING (Solo si no está completo) ---
-if not user_data.get("onboarding_completo"):
-    st.title("🎯 Entrenamiento")
-    if 'idx' not in st.session_state:
-        st.session_state.idx = 0
-        p = requests.get(f"https://api.themoviedb.org/3/movie/popular?api_key={TMDB_API_KEY}&language=es-ES").json()['results'][:10]
-        s = requests.get(f"https://api.themoviedb.org/3/tv/popular?api_key={TMDB_API_KEY}&language=es-ES").json()['results'][:10]
-        st.session_state.items_onb = p + s
-    
-    if st.session_state.idx < len(st.session_state.items_onb):
-        item = st.session_state.items_onb[st.session_state.idx]
-        st.image(f"https://image.tmdb.org/t/p/w500{item['poster_path']}", width=200)
-        rat = st.feedback("stars", key=f"onb_{item['id']}")
-        if rat is not None:
-            registrar_visto(item['id'], item.get('title') or item.get('name'), rat+1, "Peli" if item.get('title') else "Serie")
-            st.session_state.idx += 1
-            st.rerun()
-        if st.button("No la vi"):
-            st.session_state.idx += 1
-            st.rerun()
-    else:
-        user_ref.update({"onboarding_completo": True})
-        st.rerun()
-    st.stop()
-
-# --- BUSCADOR PRINCIPAL ---
 st.sidebar.title(f"👤 {usuario_actual}")
 if st.sidebar.button("Cerrar Sesión"):
     del st.session_state.usuario
     st.rerun()
 
-st.title("🚀 Refinador de Búsqueda")
-tipo = st.radio("¿Qué buscamos?", ["Película", "Serie"], horizontal=True)
+st.title("🚀 Buscador de Pelis y Series")
+
+# Botón para limpiar todo y resetear búsqueda
+if st.button("🔄 Nueva Búsqueda (Resetear Filtros)"):
+    for key in ['resultados', 'final', 'tipo_f']:
+        if key in st.session_state: del st.session_state[key]
+    st.rerun()
+
+tipo = st.radio("¿Qué buscamos hoy?", ["Película", "Serie"], horizontal=True)
 gens = GENEROS_MOVIE if tipo == "Película" else GENEROS_TV
-seleccion_gens = st.multiselect("Géneros:", list(gens.keys()))
+seleccion_gens = st.multiselect("Combiná géneros:", list(gens.keys()))
 
 if st.button(f"Buscar {tipo}s"):
     ids = ",".join([str(gens[g]) for g in seleccion_gens])
     path = "movie" if tipo == "Película" else "tv"
     url = f"https://api.themoviedb.org/3/discover/{path}?api_key={TMDB_API_KEY}&language=es-ES&with_genres={ids}&sort_by=popularity.desc"
-    ya_vistas = obtener_vistas()
-    res = requests.get(url).json()['results']
-    st.session_state.resultados = [c for c in res if c['id'] not in ya_vistas][:6]
+    vistas = obtener_vistas()
+    res = requests.get(url).json().get('results', [])
+    st.session_state.resultados = [c for c in res if c['id'] not in vistas][:6]
 
-# --- GRILLA DE OPCIONES ---
-if 'resultados' in st.session_state:
+# --- GRILLA DE RESULTADOS ---
+if 'resultados' in st.session_state and 'final' not in st.session_state:
+    st.write("### Opciones para vos:")
     cols = st.columns(3)
-    for i, p in enumerate(st.session_state.resultados[:6]):
+    for i, p in enumerate(st.session_state.resultados):
         with cols[i % 3]:
             st.image(f"https://image.tmdb.org/t/p/w300{p['poster_path']}")
             t = p.get('title') or p.get('name')
+            st.caption(f"**{t}**")
             
-            # Opción 1: Calificar porque ya la vio
-            st.write("¿Ya la viste?")
-            rat = st.feedback("stars", key=f"res_{p['id']}")
+            # Calificar rápido (Ya la vi)
+            rat = st.feedback("stars", key=f"grid_{p['id']}")
             if rat is not None:
-                registrar_visto(p['id'], t, rat+1, tipo)
+                registrar_voto(p['id'], t, rat+1, tipo)
                 st.session_state.resultados.pop(i)
                 st.rerun()
             
-            # Opción 2: Refinar (Buscar similares)
-            if st.button(f"Más como esta", key=f"ref_{p['id']}"):
-                path = "movie" if tipo == "Película" else "tv"
-                url_sim = f"https://api.themoviedb.org/3/{path}/{p['id']}/similar?api_key={TMDB_API_KEY}&language=es-ES"
-                similares = requests.get(url_sim).json()['results']
-                ya_vistas = obtener_vistas()
-                st.session_state.resultados = [c for c in similares if c['id'] not in ya_vistas][:6]
-                st.rerun()
+            col_b1, col_b2 = st.columns(2)
+            with col_b1:
+                if st.button("Más como esta", key=f"sim_{p['id']}", use_container_width=True):
+                    path = "movie" if tipo == "Película" else "tv"
+                    url_s = f"https://api.themoviedb.org/3/{path}/{p['id']}/similar?api_key={TMDB_API_KEY}&language=es-ES"
+                    vistas = obtener_vistas()
+                    st.session_state.resultados = [c for c in requests.get(url_s).json().get('results', []) if c['id'] not in vistas][:6]
+                    st.rerun()
+            with col_b2:
+                if st.button("Ver Ficha", key=f"fich_{p['id']}", use_container_width=True):
+                    st.session_state.final = p
+                    st.session_state.tipo_f = "movie" if tipo == "Película" else "tv"
+                    st.rerun()
 
-            # Opción 3: Ver detalles
-            if st.button(f"Ver Ficha", key=f"det_{p['id']}"):
-                st.session_state.final = p
-                st.session_state.tipo_f = tipo
-                st.rerun()
-
-# --- FICHA FINAL ---
+# --- FICHA DETALLADA CON TRAILER Y PLATAFORMAS ---
 if 'final' in st.session_state:
     p = st.session_state.final
     t = p.get('title') or p.get('name')
+    vid_key, plats = obtener_info_extra(p['id'], st.session_state.tipo_f)
+    
     st.divider()
-    col1, col2 = st.columns([1, 2])
-    with col1: st.image(f"https://image.tmdb.org/t/p/w500{p['poster_path']}")
-    with col2:
+    if st.button("⬅️ Volver a los resultados"):
+        del st.session_state.final
+        st.rerun()
+
+    c1, c2 = st.columns([1, 1.5])
+    with c1:
+        st.image(f"https://image.tmdb.org/t/p/w500{p['poster_path']}", use_container_width=True)
+    with c2:
         st.header(t)
-        st.write(p['overview'])
+        st.write(f"**Sinopsis:** {p['overview']}")
         
-        # Trailer Subtitulado
-        query = f"{t} trailer español latino"
-        yt_url = f"https://www.youtube.com/results?search_query={query.replace(' ', '+')}"
-        st.video(requests.get(f"https://api.themoviedb.org/3/{'movie' if st.session_state.tipo_f == 'Película' else 'tv'}/{p['id']}/videos?api_key={TMDB_API_KEY}").json()['results'][0]['key'] if requests.get(f"https://api.themoviedb.org/3/{'movie' if st.session_state.tipo_f == 'Película' else 'tv'}/{p['id']}/videos?api_key={TMDB_API_KEY}").json()['results'] else yt_url)
-        
-        st.link_button("📺 Buscar Trailer en YouTube", yt_url)
-        
-        if st.button("⬅️ Volver"):
+        st.subheader("📍 ¿Dónde verla en Argentina?")
+        if plats:
+            st.success(" / ".join(plats))
+        else:
+            st.warning("No disponible en plataformas de streaming (probar Stremio o Cuevana).")
+            
+        st.subheader("🎥 Trailer")
+        if vid_key:
+            st.video(f"https://www.youtube.com/watch?v={vid_key}")
+        else:
+            st.write("No encontramos trailer directo.")
+            st.link_button("Buscar trailer en YouTube", f"https://www.youtube.com/results?search_query={t}+trailer+subtitulado+español")
+
+        st.divider()
+        st.write("¿La viste? Calificá para guardar en tu historial:")
+        f_rat = st.feedback("stars", key="f_final")
+        if f_rat is not None:
+            registrar_voto(p['id'], t, f_rat+1, st.session_state.tipo_f)
             del st.session_state.final
+            if 'resultados' in st.session_state: del st.session_state.resultados
             st.rerun()
