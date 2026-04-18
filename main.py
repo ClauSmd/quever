@@ -279,30 +279,16 @@ if st.button("🚀 Generar Recomendaciones", use_container_width=True, type="pri
         st.session_state.descartadas_sesion = set()
 
         with st.spinner("🤖 Analizando tu perfil cinéfilo..."):
-            titulos_ia = recomendar_con_ia(
-                st.session_state.usuario,
-                st.session_state.plan_desc,
-                anios_sel,
-            )
-
-            ids_vistos = obtener_ids_vistos(st.session_state.usuario)
-            resultados = []
-
-            for titulo in titulos_ia:
-                if len(resultados) >= max_peliculas + 3:
-                    break
-                try:
-                    pelicula = buscar_en_tmdb(titulo, anios_sel[0], anios_sel[1])
-                    if pelicula and pelicula["id"] not in ids_vistos:
-                        resultados.append(pelicula)
-                except Exception:
-                    continue
-
-            st.session_state.resultados = resultados
-            st.session_state.ia_status = "off"
-
-        if not resultados:
-            st.error("No encontré resultados. Probá otra categoría o ampliá el rango de años.")
+            try:
+                titulos_ia = recomendar_con_ia(
+                    st.session_state.usuario,
+                    st.session_state.plan_desc,
+                    anios_sel,
+                )
+                st.write("✅ Títulos IA:", titulos_ia)  # debug temporal
+            except Exception as e:
+                st.error(f"❌ Error en IA: {e}")          # muestra el error real
+                st.stop()
 
 # ──────────────────────────────────────────────
 # 9. RENDERIZADO DE PELÍCULAS
