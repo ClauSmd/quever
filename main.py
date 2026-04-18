@@ -39,16 +39,14 @@ def registrar_voto(id_p, titulo, stars, tipo):
     })
 
 def obtener_info_extra(id_p, tipo_path):
-    # Trailers
     url_v = f"https://api.themoviedb.org/3/{tipo_path}/{id_p}/videos?api_key={TMDB_API_KEY}&language=es-ES"
     res_v = requests.get(url_v).json().get('results', [])
-    if not res_v: # Si no hay en español, buscamos en inglés
+    if not res_v:
         url_v = f"https://api.themoviedb.org/3/{tipo_path}/{id_p}/videos?api_key={TMDB_API_KEY}"
         res_v = requests.get(url_v).json().get('results', [])
     
-    # Plataformas (Watch Providers)
     url_w = f"https://api.themoviedb.org/3/{tipo_path}/{id_p}/watch/providers?api_key={TMDB_API_KEY}"
-    res_w = requests.get(url_w).json().get('results', {}).get('AR', {}) # Filtro ARGENTINA
+    res_w = requests.get(url_w).json().get('results', {}).get('AR', {})
     plataformas = [p['provider_name'] for p in res_w.get('flatrate', [])]
     
     video_key = res_v[0]['key'] if res_v else None
@@ -59,20 +57,23 @@ if 'usuario' not in st.session_state:
     st.title("🎬 Que Ver - Smart Engine")
     tab1, tab2 = st.tabs(["Entrar", "Registrarse"])
     with tab2:
-        n = st.text_input("Nombre:").strip()
-        p = st.text_input("PIN:", type="password")
-        if st.button("Crear Perfil"):
-            db.collection("usuarios").document(n).set({"nombre": n, "pin": hash_pin(p), "onboarding_completo": False})
-            st.success("¡Registrado!")
+        n = st.text_input("Nombre de usuario:", key="reg_user").strip()
+        p = st.text_input("PIN (4 números):", type="password", key="reg_pin")
+        if st.button("Crear Perfil", key="btn_reg"):
+            if n and p:
+                db.collection("usuarios").document(n).set({"nombre": n, "pin": hash_pin(p), "onboarding_completo": False})
+                st.success("¡Registrado! Ahora podés entrar.")
     with tab1:
         u_list = [u.id for u in db.collection("usuarios").stream()]
-        n_log = st.selectbox("Usuario:", [""] + u_list)
-        p_log = st.text_input("PIN:", type="password")
-        if st.button("Entrar"):
-            doc = db.collection("usuarios").document(n_log).get()
-            if doc.exists and doc.to_dict()['pin'] == hash_pin(p_log):
-                st.session_state.usuario = n_log
-                st.rerun()
+        n_log = st.selectbox("Elegí tu nombre:", [""] + u_list, key="sel_user")
+        p_log = st.text_input("Tu PIN de acceso:", type="password", key="log_pin")
+        if st.button("Entrar", key="btn_log"):
+            if n_log:
+                doc = db.collection("usuarios").document(n_log).get()
+                if doc.exists and doc.to_dict()['pin'] == hash_pin(p_log):
+                    st.session_state.usuario = n_log
+                    st.rerun()
+                else: st.error("PIN incorrecto.")
     st.stop()
 
 # --- USO DIARIO ---
@@ -82,10 +83,9 @@ if st.sidebar.button("Cerrar Sesión"):
     del st.session_state.usuario
     st.rerun()
 
-st.title("🚀 Buscador de Pelis y Series")
+st.title("🚀 Buscador Inteligente")
 
-# Botón para limpiar todo y resetear búsqueda
-if st.button("🔄 Nueva Búsqueda (Resetear Filtros)"):
+if st.button("🔄 Nueva Búsqueda / Limpiar"):
     for key in ['resultados', 'final', 'tipo_f']:
         if key in st.session_state: del st.session_state[key]
     st.rerun()
@@ -104,7 +104,7 @@ if st.button(f"Buscar {tipo}s"):
 
 # --- GRILLA DE RESULTADOS ---
 if 'resultados' in st.session_state and 'final' not in st.session_state:
-    st.write("### Opciones para vos:")
+    st.write("### Opciones encontradas:")
     cols = st.columns(3)
     for i, p in enumerate(st.session_state.resultados):
         with cols[i % 3]:
@@ -112,35 +112,32 @@ if 'resultados' in st.session_state and 'final' not in st.session_state:
             t = p.get('title') or p.get('name')
             st.caption(f"**{t}**")
             
-            # Calificar rápido (Ya la vi)
-            rat = st.feedback("stars", key=f"grid_{p['id']}")
+            rat = st.feedback("stars", key=f"grid_stars_{p['id']}")
             if rat is not None:
                 registrar_voto(p['id'], t, rat+1, tipo)
                 st.session_state.resultados.pop(i)
                 st.rerun()
             
-            col_b1, col_b2 = st.columns(2)
-            with col_b1:
-                if st.button("Más como esta", key=f"sim_{p['id']}", use_container_width=True):
-                    path = "movie" if tipo == "Película" else "tv"
-                    url_s = f"https://api.themoviedb.org/3/{path}/{p['id']}/similar?api_key={TMDB_API_KEY}&language=es-ES"
-                    vistas = obtener_vistas()
-                    st.session_state.resultados = [c for c in requests.get(url_s).json().get('results', []) if c['id'] not in vistas][:6]
-                    st.rerun()
-            with col_b2:
-                if st.button("Ver Ficha", key=f"fich_{p['id']}", use_container_width=True):
-                    st.session_state.final = p
-                    st.session_state.tipo_f = "movie" if tipo == "Película" else "tv"
-                    st.rerun()
+            if st.button("Más como esta", key=f"sim_btn_{p['id']}", use_container_width=True):
+                path = "movie" if tipo == "Película" else "tv"
+                url_s = f"https://api.themoviedb.org/3/{path}/{p['id']}/similar?api_key={TMDB_API_KEY}&language=es-ES"
+                vistas = obtener_vistas()
+                st.session_state.resultados = [c for c in requests.get(url_s).json().get('results', []) if c['id'] not in vistas][:6]
+                st.rerun()
+            
+            if st.button("Ver Ficha", key=f"fich_btn_{p['id']}", use_container_width=True):
+                st.session_state.final = p
+                st.session_state.tipo_f = "movie" if tipo == "Película" else "tv"
+                st.rerun()
 
-# --- FICHA DETALLADA CON TRAILER Y PLATAFORMAS ---
+# --- FICHA DETALLADA ---
 if 'final' in st.session_state:
     p = st.session_state.final
     t = p.get('title') or p.get('name')
     vid_key, plats = obtener_info_extra(p['id'], st.session_state.tipo_f)
     
     st.divider()
-    if st.button("⬅️ Volver a los resultados"):
+    if st.button("⬅️ Volver"):
         del st.session_state.final
         st.rerun()
 
@@ -151,22 +148,19 @@ if 'final' in st.session_state:
         st.header(t)
         st.write(f"**Sinopsis:** {p['overview']}")
         
-        st.subheader("📍 ¿Dónde verla en Argentina?")
+        st.subheader("📍 ¿Dónde verla?")
         if plats:
             st.success(" / ".join(plats))
         else:
-            st.warning("No disponible en plataformas de streaming (probar Stremio o Cuevana).")
+            st.warning("No disponible en plataformas comunes en Argentina.")
             
-        st.subheader("🎥 Trailer")
         if vid_key:
+            st.subheader("🎥 Trailer")
             st.video(f"https://www.youtube.com/watch?v={vid_key}")
-        else:
-            st.write("No encontramos trailer directo.")
-            st.link_button("Buscar trailer en YouTube", f"https://www.youtube.com/results?search_query={t}+trailer+subtitulado+español")
-
+        
         st.divider()
-        st.write("¿La viste? Calificá para guardar en tu historial:")
-        f_rat = st.feedback("stars", key="f_final")
+        st.write("¿Ya la viste? Calificá:")
+        f_rat = st.feedback("stars", key=f"final_stars_{p['id']}")
         if f_rat is not None:
             registrar_voto(p['id'], t, f_rat+1, st.session_state.tipo_f)
             del st.session_state.final
