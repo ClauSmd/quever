@@ -1,36 +1,34 @@
 import streamlit as st
-import time
+import firebase_admin
+from firebase_admin import credentials, firestore
+import json
 
-# Configuración de la página (esto la hace ver bien en celular y PC)
-st.set_page_config(page_title="Que Ver - Recomendador", page_icon="🎬", layout="centered")
+# 1. Conexión a Firebase (Solo se hace una vez)
+if not firebase_admin._apps:
+    # Leemos la llave desde los Secrets que pegaste
+    key_dict = json.loads(st.secrets["service_account"])
+    creds = credentials.Certificate(key_dict)
+    firebase_admin.initialize_app(creds)
 
-# Estilo personalizado (CSS) para que se vea más moderno
-st.markdown("""
-    <style>
-    .main { background-color: #f5f7f9; }
-    .stButton>button { width: 100%; border-radius: 20px; height: 3em; background-color: #ff4b4b; color: white; }
-    </style>
-    """, unsafe_allow_html=True)
+db = firestore.client()
 
 st.title("🎬 Que Ver")
-st.write("Configura tu perfil para obtener las mejores recomendaciones.")
 
-# --- SECCIÓN 1: PLATAFORMAS ---
-st.subheader("¿Qué plataformas usas en Argentina?")
-plataformas = st.multiselect(
-    "Puedes elegir varias:",
-    ['Netflix', 'Disney+', 'Max', 'Amazon Prime', 'Paramount+', 'Apple TV', 'Stremio / Otros'],
-    placeholder="Seleccioná tus servicios..."
-)
+# --- SECCIÓN: PLATAFORMAS ---
+st.subheader("¿Qué servicios usas, Claudio?")
+opciones = ['Netflix', 'Disney+', 'Max', 'Amazon Prime', 'Paramount+', 'Stremio']
+seleccionadas = st.multiselect("Seleccioná una o varias:", opciones)
 
-# --- SECCIÓN 2: EL BOTÓN CON ANIMACIÓN ---
-if st.button('Guardar y continuar'):
-    if not plataformas:
-        st.warning("Por favor, seleccioná al menos una plataforma.")
+if st.button('Guardar en mi Perfil'):
+    if seleccionadas:
+        with st.spinner('Guardando en la nube...'):
+            # Guardamos en la colección "usuarios" de tu Firebase
+            doc_ref = db.collection("usuarios").document("claudio_config")
+            doc_ref.set({
+                "plataformas": seleccionadas,
+                "ultima_actualizacion": firestore.SERVER_TIMESTAMP
+            })
+        st.success(f"¡Listo! Firebase ya sabe que usas: {', '.join(seleccionadas)}")
+        st.balloons()
     else:
-        # Aquí activamos la animación que pediste
-        with st.spinner('Optimizando tu algoritmo de recomendaciones...'):
-            time.sleep(2) # Simulamos un proceso de carga con animación
-        
-        st.success(f"¡Genial! Guardamos: {', '.join(plataformas)}")
-        st.balloons() # Una pequeña animación de festejo al terminar
+        st.warning("Elegí al menos una.")
