@@ -3,26 +3,30 @@ import firebase_admin
 from firebase_admin import credentials, firestore
 import json
 
-# --- INICIALIZACIÓN DE FIREBASE (BLINDADA) ---
+# --- INICIALIZACIÓN DE FIREBASE (ULTRA-LIMPIEZA) ---
 if not firebase_admin._apps:
     try:
-        # 1. Cargamos el string del JSON desde los secrets
-        json_info_raw = st.secrets["text_secrets"]["json_key"]
+        # 1. Obtenemos el texto crudo y quitamos espacios al inicio/final
+        raw_json = st.secrets["text_secrets"]["json_key"].strip()
         
-        # 2. Lo convertimos en un diccionario real
-        json_info = json.loads(json_info_raw)
+        # 2. Intentamos cargar el JSON
+        json_info = json.loads(raw_json)
         
-        # 3. REPARACIÓN DE LA LLAVE (Esto es lo que falló al agregar Groq)
-        # Reemplazamos las barras invertidas dobles por simples para que Firebase la reconozca
+        # 3. Reparación profunda de la clave privada
         if "private_key" in json_info:
-            json_info["private_key"] = json_info["private_key"].replace("\\n", "\n")
+            pk = json_info["private_key"]
+            # Reemplaza barras dobles por simples y asegura saltos de línea reales
+            pk = pk.replace("\\n", "\n").replace("\\\\n", "\n")
+            # Elimina espacios accidentales que se cuelan al copiar/pegar
+            json_info["private_key"] = pk.strip()
         
-        # 4. Inicializamos con la llave reparada
+        # 4. Inicialización
         creds = credentials.Certificate(json_info)
         firebase_admin.initialize_app(creds)
         
     except Exception as e:
         st.error(f"❌ Error al configurar Firebase: {e}")
+        # Si falla, mostramos el error detallado para saber qué está viendo Python
         st.stop()
 
 db = firestore.client()
