@@ -3,19 +3,24 @@ import firebase_admin
 from firebase_admin import credentials, firestore
 import json
 
-# --- INICIALIZACIÓN DE FIREBASE (FIXED) ---
+# --- INICIALIZACIÓN DE FIREBASE (BLINDADA) ---
 if not firebase_admin._apps:
     try:
-        # 1. Cargamos el JSON de los secrets
-        json_info = json.loads(st.secrets["text_secrets"]["json_key"])
+        # 1. Cargamos el string del JSON desde los secrets
+        json_info_raw = st.secrets["text_secrets"]["json_key"]
         
-        # 2. EL ARREGLO MÁGICO: Reemplazamos los saltos de línea escapados
-        # Esto soluciona el error de "Invalid private key"
-        json_info["private_key"] = json_info["private_key"].replace("\\n", "\n")
+        # 2. Lo convertimos en un diccionario real
+        json_info = json.loads(json_info_raw)
         
-        # 3. Inicializamos
+        # 3. REPARACIÓN DE LA LLAVE (Esto es lo que falló al agregar Groq)
+        # Reemplazamos las barras invertidas dobles por simples para que Firebase la reconozca
+        if "private_key" in json_info:
+            json_info["private_key"] = json_info["private_key"].replace("\\n", "\n")
+        
+        # 4. Inicializamos con la llave reparada
         creds = credentials.Certificate(json_info)
         firebase_admin.initialize_app(creds)
+        
     except Exception as e:
         st.error(f"❌ Error al configurar Firebase: {e}")
         st.stop()
