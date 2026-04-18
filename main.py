@@ -2,39 +2,37 @@ import streamlit as st
 import firebase_admin
 from firebase_admin import credentials, firestore
 import json
+import re
 
-# --- INICIALIZACIÓN DE FIREBASE (SOLUCIÓN DEFINITIVA) ---
+# --- INICIALIZACIÓN DE FIREBASE (BYPASS DE FORMATO) ---
 if not firebase_admin._apps:
     try:
-        # 1. Traemos el JSON crudo
-        json_raw = st.secrets["text_secrets"]["json_key"]
-        json_info = json.loads(json_raw)
+        # 1. Leemos el texto crudo y limpiamos caracteres invisibles raros
+        raw_text = st.secrets["text_secrets"]["json_key"]
         
-        # 2. LIMPIEZA TOTAL DE LA LLAVE
-        # Quitamos espacios, saltos de línea extra y rearmamos el formato
-        pk = json_info["private_key"]
+        # Eliminamos caracteres de control extraños (non-breaking spaces, etc.)
+        clean_text = "".join(char for char in raw_text if ord(char) < 128)
         
-        # Primero quitamos los encabezados para limpiar el interior
-        header = "-----BEGIN PRIVATE KEY-----"
-        footer = "-----END PRIVATE KEY-----"
+        # 2. Cargamos el JSON
+        json_info = json.loads(clean_text)
         
-        inner_key = pk.replace(header, "").replace(footer, "").replace("\n", "").replace(" ", "").replace("\\n", "")
+        # 3. EXTRACCIÓN FORZADA DE LA LLAVE
+        # Buscamos el bloque entre BEGIN y END sin importar qué barras hay en el medio
+        pk_match = re.search(r"-----BEGIN PRIVATE KEY-----[\s\S]+-----END PRIVATE KEY-----", clean_text)
         
-        # Rearmamos la llave con el formato exacto que pide Google (cada 64 caracteres un salto)
-        # Esto ignora cualquier error de "copiar y pegar" de los Secrets
-        fixed_pk = f"{header}\n"
-        for i in range(0, len(inner_key), 64):
-            fixed_pk += inner_key[i:i+64] + "\n"
-        fixed_pk += footer
+        if pk_match:
+            # Limpiamos la llave de cualquier ruido
+            full_pk = pk_match.group(0)
+            # Reemplazamos las barras dobles literales que pone Streamlit por saltos reales
+            full_pk = full_pk.replace("\\n", "\n")
+            json_info["private_key"] = full_pk
         
-        json_info["private_key"] = fixed_pk
-        
-        # 3. Inicializamos
+        # 4. Inicialización oficial
         creds = credentials.Certificate(json_info)
         firebase_admin.initialize_app(creds)
         
     except Exception as e:
-        st.error(f"❌ Error al configurar Firebase: {e}")
+        st.error(f"❌ Error de Conexión: {e}")
         st.stop()
 
 db = firestore.client()
