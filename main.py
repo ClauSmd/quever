@@ -6,22 +6,32 @@ import requests
 import random
 import hashlib
 
-# --- CONEXIÓN FIREBASE ---
+# 1. CONFIGURACIÓN DE LLAVES Y CONEXIÓN
+if "tmdb_api_key" in st.secrets:
+    TMDB_API_KEY = st.secrets["tmdb_api_key"]
+elif "text_secrets" in st.secrets and "tmdb_api_key" in st.secrets["text_secrets"]:
+    TMDB_API_KEY = st.secrets["text_secrets"]["tmdb_api_key"]
+else:
+    st.error("⚠️ No se encontró 'tmdb_api_key' en los Secrets.")
+    st.stop()
+
 if not firebase_admin._apps:
-    key_dict = json.loads(st.secrets["text_secrets"]["json_key"])
-    creds = credentials.Certificate(key_dict)
-    firebase_admin.initialize_app(creds)
+    try:
+        key_dict = json.loads(st.secrets["text_secrets"]["json_key"])
+        creds = credentials.Certificate(key_dict)
+        firebase_admin.initialize_app(creds)
+    except Exception as e:
+        st.error(f"Error Firebase: {e}")
+        st.stop()
 
 db = firestore.client()
-TMDB_API_KEY = st.secrets["tmdb_api_key"]
 
 def hash_pin(pin):
     return hashlib.sha256(str(pin).encode()).hexdigest()
 
-# --- SISTEMA DE LOGIN Y REGISTRO ---
+# 2. SISTEMA DE LOGIN Y REGISTRO
 if 'usuario' not in st.session_state:
     st.title("🎬 Bienvenidos a Que Ver")
-    
     tab1, tab2 = st.tabs(["Entrar", "Registrarse"])
     
     with tab2:
@@ -31,42 +41,32 @@ if 'usuario' not in st.session_state:
             if nuevo_nombre and nuevo_pin:
                 user_ref = db.collection("usuarios").document(nuevo_nombre)
                 if not user_ref.get().exists:
-                    user_ref.set({
-                        "nombre": nuevo_nombre,
-                        "pin": hash_pin(nuevo_pin)
-                    })
-                    st.success("¡Perfil creado! Ahora podés entrar.")
+                    user_ref.set({"nombre": nuevo_nombre, "pin": hash_pin(nuevo_pin)})
+                    st.success("¡Perfil creado! Ya podés entrar.")
                 else:
                     st.error("Ese nombre ya existe.")
-            else:
-                st.warning("Completá ambos campos.")
-
+    
     with tab1:
-        # Traemos la lista de nombres registrados desde Firebase
         usuarios_ref = db.collection("usuarios").stream()
         lista_nombres = [u.id for u in usuarios_ref]
-        
         nombre_login = st.selectbox("¿Quién sos?", [""] + lista_nombres)
         pin_login = st.text_input("Tu PIN:", type="password", key="login_pin")
-        
         if st.button("Acceder"):
             user_doc = db.collection("usuarios").document(nombre_login).get()
-            if user_doc.exists:
-                if user_doc.to_dict()['pin'] == hash_pin(pin_login):
-                    st.session_state.usuario = nombre_login
-                    st.rerun()
-                else:
-                    st.error("PIN incorrecto.")
+            if user_doc.exists and user_doc.to_dict()['pin'] == hash_pin(pin_login):
+                st.session_state.usuario = nombre_login
+                st.rerun()
+            else:
+                st.error("PIN incorrecto.")
     st.stop()
 
-# --- APP UNA VEZ LOGUEADO ---
+# 3. APP PRINCIPAL (LOGUEADO)
 usuario_actual = st.session_state.usuario
 st.sidebar.title(f"👤 {usuario_actual}")
 if st.sidebar.button("Cerrar Sesión"):
     del st.session_state.usuario
     st.rerun()
 
-# --- MOSTRAR PELÍCULA ---
 if 'pelicula' not in st.session_state:
     page = random.randint(1, 15)
     url = f"https://api.themoviedb.org/3/movie/popular?api_key={TMDB_API_KEY}&language=es-ES&page={page}"
@@ -83,6 +83,7 @@ with col1:
 with col2:
     st.subheader(peli['title'])
     st.write(f"⭐ Rating: {peli['vote_average']}")
+    st.write(peli['overview'])
     
     if st.button("👍 Me gusta"):
         db.collection("gustos").document(usuario_actual).collection("likes").add({
