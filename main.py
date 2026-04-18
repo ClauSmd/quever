@@ -2,30 +2,28 @@ import streamlit as st
 import firebase_admin
 from firebase_admin import credentials, firestore
 import json
-import requests
-import random
 from groq import Groq
 
-# --- 1. CONFIGURACIÓN DE PÁGINA Y APIS ---
-st.set_page_config(page_title="Smart Movie Engine 2026", page_icon="🎬", layout="wide")
-
-# Traer llaves desde Secrets
+# --- CARGA DE SECRETS ---
+# 1. Cargamos las llaves simples
 try:
     GROQ_API_KEY = st.secrets["groq_api_key"]
     TMDB_API_KEY = st.secrets["tmdb_api_key"]
     client = Groq(api_key=GROQ_API_KEY)
 except Exception as e:
-    st.error("Error: Faltan las API Keys en los Secrets de Streamlit.")
+    st.error("⚠️ No se encontraron las claves groq_api_key o tmdb_api_key en los Secrets.")
     st.stop()
 
-# Inicializar Firebase
+# 2. Cargamos Firebase desde el bloque [text_secrets]
 if not firebase_admin._apps:
     try:
-        key_dict = json.loads(st.secrets["text_secrets"]["json_key"])
-        creds = credentials.Certificate(key_dict)
+        # Extraemos el string del JSON y lo convertimos en diccionario
+        json_info = json.loads(st.secrets["text_secrets"]["json_key"])
+        creds = credentials.Certificate(json_info)
         firebase_admin.initialize_app(creds)
     except Exception as e:
-        st.error(f"Error Firebase: {e}")
+        st.error(f"❌ Error al configurar Firebase: {e}")
+        st.stop()
 
 db = firestore.client()
 
