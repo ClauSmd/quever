@@ -2,23 +2,18 @@ import streamlit as st
 import firebase_admin
 from firebase_admin import credentials, firestore
 import json
-from groq import Groq
 
-# --- CARGA DE SECRETS ---
-# 1. Cargamos las llaves simples
-try:
-    GROQ_API_KEY = st.secrets["groq_api_key"]
-    TMDB_API_KEY = st.secrets["tmdb_api_key"]
-    client = Groq(api_key=GROQ_API_KEY)
-except Exception as e:
-    st.error("⚠️ No se encontraron las claves groq_api_key o tmdb_api_key en los Secrets.")
-    st.stop()
-
-# 2. Cargamos Firebase desde el bloque [text_secrets]
+# --- INICIALIZACIÓN DE FIREBASE (FIXED) ---
 if not firebase_admin._apps:
     try:
-        # Extraemos el string del JSON y lo convertimos en diccionario
+        # 1. Cargamos el JSON de los secrets
         json_info = json.loads(st.secrets["text_secrets"]["json_key"])
+        
+        # 2. EL ARREGLO MÁGICO: Reemplazamos los saltos de línea escapados
+        # Esto soluciona el error de "Invalid private key"
+        json_info["private_key"] = json_info["private_key"].replace("\\n", "\n")
+        
+        # 3. Inicializamos
         creds = credentials.Certificate(json_info)
         firebase_admin.initialize_app(creds)
     except Exception as e:
