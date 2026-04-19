@@ -1,69 +1,39 @@
 """
-🎬 QueVer v4.0 — Motor de Afinidad Emocional
-═══════════════════════════════════════════════
-ARQUITECTURA:
-
-  🧬 ADN de película (6 dimensiones, 0-10):
-     intensidad · complejidad · ritmo · oscuridad · espectáculo · originalidad
-     → Generado por IA UNA VEZ y cacheado en Firebase para siempre
-
-  👤 Vector de usuario:
-     → Promedio ponderado de ADNs de películas que le gustaron
-     → Vector negativo de las que rechazó
-     → Actualizado automáticamente con cada calificación
-
-  ⚙️  Motor de scoring (SIN IA):
-     score = dot(user+, movie) - 0.5 * dot(user-, movie) + bonus_rareza
-     80% top scored + 20% exploración aleatoria
-
-  🤖 IA solo para:
-     → Generar el ADN de una película (llamada única, luego Firebase)
-     → NO para elegir qué recomendar
-
-  🔑 Login con PIN + Onboarding emocional (no "¿te gusta acción?")
+🎬 QueVer v5.0
+══════════════════════════════════════════════════════
+NUEVAS FEATURES:
+  ✅ Cola infinita: siempre hay 6 cards visibles
+     Al calificar/saltar/nunca → aparece la siguiente automáticamente
+  🎬 Trailer embebido (YouTube, idioma original + subtítulos ES)
+  📺 Toggle Películas / Series (TMDB Movie + TV)
+  🚫 "Nunca" = descarte permanente + penaliza vector negativo del usuario
+     (el motor aprende a NO recomendar películas de ADN similar)
 """
 
 import streamlit as st
 import firebase_admin
 from firebase_admin import credentials, firestore
-import requests
-import random
-import base64
-import json
-import hashlib
-import math
+import requests, random, base64, json, hashlib, math
 from groq import Groq
 
 # ══════════════════════════════════════════════════════
 # PÁGINA
 # ══════════════════════════════════════════════════════
 st.set_page_config(page_title="🎬 QueVer", page_icon="🎬", layout="wide")
-
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:wght@300;400;600&display=swap');
-
 html, body, .stApp { background-color: #07070e !important; }
-section[data-testid="stSidebar"] { background: #0f0f1a !important; border-right: 1px solid #1e1e30; }
-
-h1, h2, h3 { font-family: 'Bebas Neue', sans-serif !important; letter-spacing: 3px; color: #f0f0f0; }
-p, div, span, label { font-family: 'DM Sans', sans-serif !important; }
-
-/* Botones */
-.stButton > button {
-    border-radius: 5px; font-weight: 600; font-size: 13px;
-    transition: all 0.15s; border: 1px solid #2a2a40;
-    background: #13131f; color: #ccc;
-}
-.stButton > button:hover { background: #1e1e35; color: #fff; border-color: #f5a623; }
-
-/* Pill de match */
-.dna-bar { height: 4px; border-radius: 2px; margin: 2px 0; }
-.match-gold { color: #f5a623; font-weight: 700; font-size: 13px; }
-.dim-label  { color: #555; font-size: 11px; }
-
-/* Onboarding cards */
-.ob-reaction { font-size: 11px; }
+section[data-testid="stSidebar"] { background: #0f0f1a !important; border-right:1px solid #1e1e30; }
+h1,h2,h3 { font-family:'Bebas Neue',sans-serif !important; letter-spacing:3px; }
+.stButton>button { border-radius:5px; font-weight:600; font-size:13px;
+    transition:all .15s; border:1px solid #2a2a40; background:#13131f; color:#ccc; }
+.stButton>button:hover { background:#1e1e35; color:#fff; border-color:#f5a623; }
+.match-gold { color:#f5a623; font-weight:700; font-size:13px; }
+.dim-label  { color:#666; font-size:11px; }
+.badge-nunca { background:#3a0a0a; border:1px solid #7a1a1a; color:#ff6b6b;
+    padding:3px 8px; border-radius:4px; font-size:11px; font-weight:600; }
+iframe { border-radius:8px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -81,38 +51,43 @@ def init_firebase():
 try:
     db = init_firebase()
 except Exception as e:
-    st.error(f"❌ Firebase: {e}")
-    st.stop()
+    st.error(f"❌ Firebase: {e}"); st.stop()
 
-TMDB = st.secrets["tmdb_api_key"]
+TMDB_KEY    = st.secrets["tmdb_api_key"]
 groq_client = Groq(api_key=st.secrets["groq_api_key"])
 
 # ══════════════════════════════════════════════════════
-# CONSTANTES DEL SISTEMA
+# CONSTANTES
 # ══════════════════════════════════════════════════════
-
-# Las 6 dimensiones del ADN cinematográfico
-DIMS = ["intensidad", "complejidad", "ritmo", "oscuridad", "espectaculo", "originalidad"]
-
+DIMS = ["intensidad","complejidad","ritmo","oscuridad","espectaculo","originalidad"]
 DIMS_LABELS = {
-    "intensidad":   "⚡ Intensidad emocional",
-    "complejidad":  "🧠 Complejidad mental",
-    "ritmo":        "🏃 Ritmo",
-    "oscuridad":    "🌑 Oscuridad / Peso",
-    "espectaculo":  "💥 Espectáculo visual",
-    "originalidad": "✨ Originalidad / Rareza",
+    "intensidad":  "⚡ Intensidad emocional",
+    "complejidad": "🧠 Complejidad mental",
+    "ritmo":       "🏃 Ritmo narrativo",
+    "oscuridad":   "🌑 Oscuridad / Peso",
+    "espectaculo": "💥 Espectáculo visual",
+    "originalidad":"✨ Originalidad",
+}
+MOOD_VECS = {
+    "🍿 Pochoclera":    [8,4,9,4,9,4],
+    "🕵️ Intriga":       [7,8,6,8,4,7],
+    "🎞️ Joya Oculta":   [6,7,5,6,3,9],
+    "👪 Familiar":      [5,3,7,1,7,5],
+    "🧠 Hechos Reales": [7,7,5,6,3,6],
+    "💔 Drama":         [9,7,3,7,2,6],
+    "😂 Comedia":       [5,3,7,1,5,6],
+}
+GENERO_IDS_MOVIE = {
+    "🍿 Pochoclera":"28","🕵️ Intriga":"53","🎞️ Joya Oculta":"18",
+    "👪 Familiar":"10751","🧠 Hechos Reales":"99","💔 Drama":"18","😂 Comedia":"35",
+}
+GENERO_IDS_TV = {
+    "🍿 Pochoclera":"10759","🕵️ Intriga":"9648","🎞️ Joya Oculta":"18",
+    "👪 Familiar":"10751","🧠 Hechos Reales":"99","💔 Drama":"18","😂 Comedia":"35",
 }
 
-# Cada categoría tiene un "mood ADN" que guía al motor
-MOOD_VECTORES = {
-    "🍿 Pochoclera":    {"intensidad":8,"complejidad":4,"ritmo":9,"oscuridad":4,"espectaculo":9,"originalidad":4},
-    "🕵️ Intriga":       {"intensidad":7,"complejidad":8,"ritmo":6,"oscuridad":8,"espectaculo":4,"originalidad":7},
-    "🎞️ Joya Oculta":   {"intensidad":6,"complejidad":7,"ritmo":5,"oscuridad":6,"espectaculo":3,"originalidad":9},
-    "👪 Familiar":      {"intensidad":5,"complejidad":3,"ritmo":7,"oscuridad":1,"espectaculo":7,"originalidad":5},
-    "🧠 Hechos Reales": {"intensidad":7,"complejidad":7,"ritmo":5,"oscuridad":6,"espectaculo":3,"originalidad":6},
-    "💔 Drama":         {"intensidad":9,"complejidad":7,"ritmo":3,"oscuridad":7,"espectaculo":2,"originalidad":6},
-    "😂 Comedia":       {"intensidad":5,"complejidad":3,"ritmo":7,"oscuridad":1,"espectaculo":5,"originalidad":6},
-}
+SLOTS = 6   # cards siempre visibles
+COLA_MIN = 8  # reponer cola cuando baja de este número
 
 # ══════════════════════════════════════════════════════
 # TMDB HELPERS
@@ -121,393 +96,328 @@ def tmdb(endpoint, params={}):
     try:
         r = requests.get(
             f"https://api.themoviedb.org/3{endpoint}",
-            params={"api_key": TMDB, "language": "es-ES", **params},
-            timeout=6,
+            params={"api_key": TMDB_KEY, "language":"es-ES", **params},
+            timeout=7,
         )
         return r.json()
     except Exception:
         return {}
 
-@st.cache_data(ttl=7200, show_spinner=False)
-def tmdb_buscar(titulo: str, anio_min: int, anio_max: int):
-    results = tmdb("/search/movie", {"query": titulo}).get("results", [])
-    for r in results:
-        if not r.get("poster_path"):
-            continue
-        anio = int((r.get("release_date") or "0")[:4] or 0)
-        if anio_min <= anio <= anio_max:
-            return r
+def tmdb_en(endpoint, params={}):
+    """Sin traducción — para trailers."""
+    try:
+        r = requests.get(
+            f"https://api.themoviedb.org/3{endpoint}",
+            params={"api_key": TMDB_KEY, **params},
+            timeout=7,
+        )
+        return r.json()
+    except Exception:
+        return {}
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_trailer_key(tmdb_id: int, media_type: str) -> str | None:
+    """
+    Busca el trailer oficial en YouTube en idioma original.
+    Prioridad: Official Trailer → Trailer → Teaser
+    """
+    data = tmdb_en(f"/{media_type}/{tmdb_id}/videos")
+    videos = data.get("results", [])
+    prioridad = ["Official Trailer","Trailer","Teaser"]
+    for tipo in prioridad:
+        for v in videos:
+            if v.get("site") == "YouTube" and v.get("type","") in (tipo, "Trailer"):
+                return v["key"]
+    # fallback: cualquier YouTube
+    for v in videos:
+        if v.get("site") == "YouTube":
+            return v["key"]
     return None
 
 @st.cache_data(ttl=7200, show_spinner=False)
-def tmdb_discover(pagina=1, sort="popularity.desc", generos="", anio_min=1990, anio_max=2025) -> list:
-    params = {
-        "sort_by": sort,
-        "page": pagina,
-        "vote_count.gte": 200,
-        "primary_release_date.gte": f"{anio_min}-01-01",
-        "primary_release_date.lte": f"{anio_max}-12-31",
-    }
-    if generos:
-        params["with_genres"] = generos
-    return tmdb("/discover/movie", params).get("results", [])
+def discover_pool(media_type:str, sort:str, genero:str,
+                  anio_min:int, anio_max:int, pagina:int=1) -> list:
+    if media_type == "movie":
+        params = {
+            "sort_by": sort, "page": pagina,
+            "vote_count.gte": 150,
+            "primary_release_date.gte": f"{anio_min}-01-01",
+            "primary_release_date.lte": f"{anio_max}-12-31",
+        }
+        if genero: params["with_genres"] = genero
+        return tmdb("/discover/movie", params).get("results",[])
+    else:
+        params = {
+            "sort_by": sort, "page": pagina,
+            "vote_count.gte": 100,
+            "first_air_date.gte": f"{anio_min}-01-01",
+            "first_air_date.lte": f"{anio_max}-12-31",
+        }
+        if genero: params["with_genres"] = genero
+        return tmdb("/discover/tv", params).get("results",[])
 
 @st.cache_data(ttl=7200, show_spinner=False)
 def peliculas_onboarding_pool() -> list:
-    """Pool diverso de 60 películas para el onboarding."""
-    pool = []
-    seen = set()
-    queries = [
-        ("/movie/top_rated", {"page": 1}),
-        ("/movie/top_rated", {"page": 2}),
-        ("/movie/popular",   {"page": 1}),
-        ("/discover/movie",  {"sort_by": "vote_average.desc", "vote_count.gte": 3000,
-                              "primary_release_date.lte": "2010-12-31", "page": 1}),
-        ("/discover/movie",  {"sort_by": "popularity.desc", "with_genres": "18", "page": 1}),
-        ("/discover/movie",  {"sort_by": "popularity.desc", "with_genres": "27", "page": 1}),
-        ("/discover/movie",  {"sort_by": "popularity.desc", "with_genres": "35", "page": 1}),
+    pool, seen = [], set()
+    endpoints = [
+        ("/movie/top_rated",  {"page":1}),
+        ("/movie/top_rated",  {"page":2}),
+        ("/movie/popular",    {"page":1}),
+        ("/tv/top_rated",     {"page":1}),
+        ("/tv/popular",       {"page":1}),
+        ("/discover/movie",   {"sort_by":"vote_average.desc","vote_count.gte":3000,
+                               "primary_release_date.lte":"2010-12-31","page":1}),
+        ("/discover/movie",   {"sort_by":"popularity.desc","with_genres":"35","page":1}),
+        ("/discover/movie",   {"sort_by":"popularity.desc","with_genres":"27","page":1}),
     ]
-    for endpoint, params in queries:
-        for r in tmdb(endpoint, {"api_key": TMDB, "language": "es-ES", **params}).get("results", []):
+    for ep, params in endpoints:
+        for r in tmdb(ep, params).get("results",[]):
             if r.get("poster_path") and r["id"] not in seen:
+                # normalizar campo media_type
+                r["_media"] = "tv" if "first_air_date" in r else "movie"
+                r["_titulo"] = r.get("title") or r.get("name","")
+                r["_anio"]   = (r.get("release_date") or r.get("first_air_date",""))[:4]
                 seen.add(r["id"])
                 pool.append(r)
     random.shuffle(pool)
-    return pool[:60]
+    return pool[:70]
 
 # ══════════════════════════════════════════════════════
-# SISTEMA DE ADN — GENERACIÓN Y ALMACENAMIENTO
+# ADN CINEMATOGRÁFICO
 # ══════════════════════════════════════════════════════
-
-def generar_adn_ia(titulo: str, anio: str, overview: str) -> dict:
-    """
-    Llama a Groq UNA SOLA VEZ para generar el ADN de una película.
-    Devuelve dict con las 6 dimensiones (0-10).
-    """
-    prompt = f"""Analizá esta película y devolvé SOLO un JSON con las 6 dimensiones.
-Película: "{titulo}" ({anio})
-Sinopsis: {overview[:400] if overview else 'no disponible'}
+def generar_adn_ia(titulo:str, anio:str, overview:str, media:str="movie") -> dict:
+    tipo = "serie de TV" if media == "tv" else "película"
+    prompt = f"""Analizá esta {tipo} y devolvé SOLO un JSON con 6 números del 0 al 10.
+Título: "{titulo}" ({anio})
+Sinopsis: {overview[:350] if overview else 'no disponible'}
 
 Dimensiones (0=mínimo, 10=máximo):
-- intensidad: impacto emocional en el espectador
-- complejidad: exigencia intelectual / trama compleja
-- ritmo: velocidad narrativa (0=muy lento, 10=frenético)
-- oscuridad: tono sombrío, temas pesados
-- espectaculo: acción visual, efectos, escenas espectaculares
-- originalidad: cuán única/atípica es dentro de su tipo
+intensidad=impacto emocional · complejidad=exigencia intelectual · ritmo=velocidad narrativa
+oscuridad=tono sombrío/pesado · espectaculo=acción visual/efectos · originalidad=cuán única es
 
-Responde ÚNICAMENTE con JSON válido, sin texto extra:
-{{"intensidad": X, "complejidad": X, "ritmo": X, "oscuridad": X, "espectaculo": X, "originalidad": X}}"""
-
+Responde ÚNICAMENTE con JSON válido:
+{{"intensidad":X,"complejidad":X,"ritmo":X,"oscuridad":X,"espectaculo":X,"originalidad":X}}"""
     try:
         resp = groq_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.3,
-            max_tokens=120,
+            messages=[{"role":"user","content":prompt}],
+            temperature=0.2, max_tokens=100,
         )
-        raw = resp.choices[0].message.content.strip()
-        # Limpiar posibles ```json ... ```
-        raw = raw.replace("```json", "").replace("```", "").strip()
+        raw = resp.choices[0].message.content.strip().replace("```json","").replace("```","")
         adn = json.loads(raw)
-        # Validar y clampear valores
-        return {d: max(0, min(10, int(adn.get(d, 5)))) for d in DIMS}
+        return {d: max(0, min(10, int(adn.get(d,5)))) for d in DIMS}
     except Exception:
-        # Fallback: ADN neutro
-        return {d: 5 for d in DIMS}
+        return {d:5 for d in DIMS}
 
-def obtener_o_crear_adn(tmdb_id: int, titulo: str, anio: str, overview: str) -> dict:
-    """
-    Busca el ADN en Firebase. Si no existe, lo genera con IA y lo guarda.
-    Esto garantiza que cada película se analiza UNA SOLA VEZ.
-    """
-    ref = db.collection("peliculas").document(str(tmdb_id))
+def obtener_o_crear_adn(tmdb_id:int, titulo:str, anio:str, overview:str, media:str="movie") -> dict:
+    ref = db.collection("peliculas").document(f"{media}_{tmdb_id}")
     doc = ref.get()
     if doc.exists:
         data = doc.to_dict()
         if all(d in data for d in DIMS):
-            return {d: data[d] for d in DIMS}
-
-    # No existe → generar con IA
-    adn = generar_adn_ia(titulo, anio, overview)
-    ref.set({
-        "id_tmdb": tmdb_id,
-        "titulo": titulo,
-        "anio": anio,
-        **adn,
-        "generado": firestore.SERVER_TIMESTAMP,
-    }, merge=True)
+            return {d:data[d] for d in DIMS}
+    adn = generar_adn_ia(titulo, anio, overview, media)
+    ref.set({"id_tmdb":tmdb_id,"titulo":titulo,"anio":anio,"media":media,**adn,
+             "generado":firestore.SERVER_TIMESTAMP}, merge=True)
     return adn
 
-def vec(adn: dict) -> list:
-    """Convierte ADN dict a lista ordenada."""
-    return [adn.get(d, 5) for d in DIMS]
-
-def dot(a: list, b: list) -> float:
-    return sum(x * y for x, y in zip(a, b))
-
-def norm(v: list) -> float:
-    return math.sqrt(sum(x**2 for x in v)) or 1.0
-
-def cosine_sim(a: list, b: list) -> float:
-    return dot(a, b) / (norm(a) * norm(b))
+# ══════════════════════════════════════════════════════
+# VECTOR UTILS
+# ══════════════════════════════════════════════════════
+def vec(adn:dict) -> list: return [adn.get(d,5) for d in DIMS]
+def dot(a,b): return sum(x*y for x,y in zip(a,b))
+def norm(v):  return math.sqrt(sum(x**2 for x in v)) or 1.0
+def cosine(a,b): return dot(a,b)/(norm(a)*norm(b))
 
 # ══════════════════════════════════════════════════════
-# PERFIL DE USUARIO — VECTOR
+# PERFIL DE USUARIO
 # ══════════════════════════════════════════════════════
-
-def actualizar_vector_usuario(usuario: str, adn: dict, stars: int):
-    """
-    Actualiza el vector positivo o negativo del usuario según la calificación.
-    stars 4-5 → refuerza vector positivo
-    stars 1-2 → refuerza vector negativo
-    stars 3   → leve positivo
-    """
-    ref = db.collection("usuarios").document(usuario)
-    doc = ref.get()
-    datos = doc.to_dict() if doc.exists else {}
-
-    v_pos = datos.get("vector_pos", [5.0]*6)
-    v_neg = datos.get("vector_neg", [5.0]*6)
-    n_pos = datos.get("n_pos", 0)
-    n_neg = datos.get("n_neg", 0)
-    movie_vec = vec(adn)
-
-    if stars >= 4:
-        # Actualizar media móvil positiva (peso proporcional a las estrellas)
-        peso = 2 if stars == 5 else 1
-        n_pos_new = n_pos + peso
-        v_pos = [(v_pos[i] * n_pos + movie_vec[i] * peso) / n_pos_new for i in range(6)]
-        n_pos = n_pos_new
-    elif stars <= 2:
-        peso = 2 if stars == 1 else 1
-        n_neg_new = n_neg + peso
-        v_neg = [(v_neg[i] * n_neg + movie_vec[i] * peso) / n_neg_new for i in range(6)]
-        n_neg = n_neg_new
-    else:  # 3 estrellas → leve positivo
-        if n_pos > 0:
-            v_pos = [(v_pos[i] * n_pos + movie_vec[i] * 0.5) / (n_pos + 0.5) for i in range(6)]
-
-    ref.set({
-        "vector_pos": v_pos,
-        "vector_neg": v_neg,
-        "n_pos": n_pos,
-        "n_neg": n_neg,
-    }, merge=True)
-
-def obtener_perfil_usuario(usuario: str) -> dict:
-    """Lee el perfil completo del usuario desde Firebase."""
+def obtener_perfil(usuario:str) -> dict:
     doc = db.collection("usuarios").document(usuario).get()
-    datos = doc.to_dict() if doc.exists else {}
+    d   = doc.to_dict() if doc.exists else {}
     return {
-        "vector_pos": datos.get("vector_pos", [5.0]*6),
-        "vector_neg": datos.get("vector_neg", [5.0]*6),
-        "n_pos":      datos.get("n_pos", 0),
-        "n_neg":      datos.get("n_neg", 0),
-        "onboarding": datos.get("onboarding", False),
-        "pin":        datos.get("pin", ""),
+        "vector_pos": d.get("vector_pos",[5.0]*6),
+        "vector_neg": d.get("vector_neg",[5.0]*6),
+        "n_pos":      d.get("n_pos",0),
+        "n_neg":      d.get("n_neg",0),
+        "onboarding": d.get("onboarding",False),
+        "pin":        d.get("pin",""),
     }
+
+def actualizar_vector(usuario:str, adn:dict, stars:int):
+    perfil = obtener_perfil(usuario)
+    vp = perfil["vector_pos"]; vn = perfil["vector_neg"]
+    np_ = perfil["n_pos"];     nn  = perfil["n_neg"]
+    mv  = vec(adn)
+    if stars >= 4:
+        w = 2 if stars == 5 else 1
+        np2 = np_ + w
+        vp  = [(vp[i]*np_ + mv[i]*w)/np2 for i in range(6)]
+        np_ = np2
+    elif stars <= 2:
+        # 🚫 "Nunca" o calificación baja → penaliza vector negativo
+        # El motor luego usará esto para bajar el score de películas similares
+        w  = 2 if stars == 0 else (2 if stars == 1 else 1)
+        nn2 = nn + w
+        vn  = [(vn[i]*nn + mv[i]*w)/nn2 for i in range(6)]
+        nn  = nn2
+    else:  # 3 estrellas
+        if np_ > 0:
+            vp = [(vp[i]*np_ + mv[i]*0.5)/(np_+0.5) for i in range(6)]
+    db.collection("usuarios").document(usuario).update({
+        "vector_pos":vp,"vector_neg":vn,"n_pos":np_,"n_neg":nn
+    })
 
 # ══════════════════════════════════════════════════════
 # HISTORIAL
 # ══════════════════════════════════════════════════════
-
-@st.cache_data(ttl=60, show_spinner=False)
-def obtener_historial(usuario: str) -> list:
+@st.cache_data(ttl=45, show_spinner=False)
+def obtener_historial(usuario:str) -> list:
     docs = db.collection("gustos").document(usuario).collection("historial").stream()
     return [d.to_dict() for d in docs]
 
-def ids_vistos(usuario: str) -> set:
+def ids_vistos(usuario:str) -> set:
     return {h.get("id_tmdb") for h in obtener_historial(usuario)}
 
-def registrar_voto(usuario: str, tmdb_id: int, titulo: str, stars: int, adn: dict):
-    db.collection("gustos").document(usuario).collection("historial").document(str(tmdb_id)).set({
-        "id_tmdb": tmdb_id, "titulo": titulo, "stars": stars,
-        "adn": adn, "fecha": firestore.SERVER_TIMESTAMP,
+def registrar_voto(usuario:str, tmdb_id:int, titulo:str, stars:int,
+                   adn:dict, media:str="movie"):
+    db.collection("gustos").document(usuario).collection("historial")\
+      .document(f"{media}_{tmdb_id}").set({
+        "id_tmdb":tmdb_id,"titulo":titulo,"stars":stars,
+        "media":media,"adn":adn,"fecha":firestore.SERVER_TIMESTAMP,
     })
-    actualizar_vector_usuario(usuario, adn, stars)
+    actualizar_vector(usuario, adn, stars)
     obtener_historial.clear()
 
-def registrar_descarte(usuario: str, tmdb_id: int, titulo: str, adn: dict):
-    db.collection("gustos").document(usuario).collection("historial").document(str(tmdb_id)).set({
-        "id_tmdb": tmdb_id, "titulo": titulo, "stars": 0,
-        "descartada": True, "adn": adn, "fecha": firestore.SERVER_TIMESTAMP,
+def registrar_descarte_permanente(usuario:str, tmdb_id:int, titulo:str,
+                                  adn:dict, media:str="movie"):
+    """
+    🚫 NUNCA — Qué hace exactamente:
+    1. Guarda en Firebase con stars=0 y descartada=True
+    2. Actualiza el vector NEGATIVO del usuario con este ADN
+       → El motor penalizará películas con ADN similar en el futuro
+    3. La película nunca vuelve a aparecer (filtrada por ids_vistos)
+    """
+    db.collection("gustos").document(usuario).collection("historial")\
+      .document(f"{media}_{tmdb_id}").set({
+        "id_tmdb":tmdb_id,"titulo":titulo,"stars":0,
+        "descartada":True,"media":media,"adn":adn,
+        "fecha":firestore.SERVER_TIMESTAMP,
     })
-    actualizar_vector_usuario(usuario, adn, 1)  # cuenta como rechazo
+    actualizar_vector(usuario, adn, 0)  # stars=0 → penalización máxima
     obtener_historial.clear()
 
 # ══════════════════════════════════════════════════════
-# MOTOR DE SCORING (sin IA)
+# MOTOR DE SCORING
 # ══════════════════════════════════════════════════════
+def score_item(perfil:dict, movie_adn:dict, mood_vec:list, rareza:float) -> float:
+    vp = perfil["vector_pos"]; vn = perfil["vector_neg"]
+    vm = vec(movie_adn)
+    if perfil["n_pos"] < 3:
+        return cosine(mood_vec, vm)*10 + rareza*0.3
+    return (cosine(vp,vm)*5.0 + cosine(mood_vec,vm)*3.0
+            + rareza*0.8 - cosine(vn,vm)*2.5)
 
-def score_pelicula(usuario_perfil: dict, movie_adn: dict, mood_vec: dict, rareza: float) -> float:
-    """
-    score = 0.5 * afinidad_usuario + 0.3 * mood_match + 0.1 * bonus_rareza - 0.1 * rechazo
-    """
-    v_usuario = usuario_perfil["vector_pos"]
-    v_rechazo = usuario_perfil["vector_neg"]
-    v_movie   = vec(movie_adn)
-    v_mood    = vec(mood_vec)
-    n_pos     = usuario_perfil["n_pos"]
+def normalizar_item(p:dict, media_type:str) -> dict:
+    """Unifica campos entre movies y TV shows."""
+    p = dict(p)
+    p["_media"]  = media_type
+    p["_titulo"] = p.get("title") or p.get("name","")
+    p["_anio"]   = (p.get("release_date") or p.get("first_air_date",""))[:4]
+    return p
 
-    # Si el usuario no tiene historial, ponderar más el mood
-    if n_pos < 3:
-        s_usuario = 0.0
-        s_mood    = cosine_sim(v_mood, v_movie)
-        return s_mood * 10 + rareza * 0.5
-    else:
-        s_usuario = cosine_sim(v_usuario, v_movie)
-        s_mood    = cosine_sim(v_mood, v_movie)
-        s_rechazo = cosine_sim(v_rechazo, v_movie)
-        s_rareza  = rareza / 10.0
-
-        return (s_usuario * 5.0) + (s_mood * 3.0) + (s_rareza * 1.0) - (s_rechazo * 2.0)
-
-def recomendar_motor(usuario: str, mood_nombre: str, anio_min: int, anio_max: int, n: int = 6) -> list:
-    """
-    Motor principal de recomendación. Sin llamadas a IA.
-    1. Obtiene pool de ~60 candidatos de TMDB
-    2. Genera/recupera ADN de cada uno
-    3. Scoreea con perfil de usuario + mood
-    4. Devuelve 80% top scores + 20% exploración aleatoria
-    """
-    perfil   = obtener_perfil_usuario(usuario)
-    vistos   = ids_vistos(usuario)
-    mood_vec = MOOD_VECTORES[mood_nombre]
-
-    # ── Armar pool de candidatos ──────────────────────
-    candidatos_raw = []
-    sorts = ["popularity.desc", "vote_average.desc", "vote_count.desc"]
-
+def fetch_candidatos(media_type:str, mood:str, anio_min:int, anio_max:int) -> list:
+    genero_map = GENERO_IDS_TV if media_type=="tv" else GENERO_IDS_MOVIE
+    genero = genero_map.get(mood,"")
+    sorts  = ["popularity.desc","vote_average.desc","vote_count.desc"]
+    raw    = []
     for sort in sorts:
-        candidatos_raw += tmdb_discover(
-            pagina=random.randint(1, 3),
-            sort=sort,
-            anio_min=anio_min,
-            anio_max=anio_max,
-        )
+        raw += discover_pool(media_type, sort, genero, anio_min, anio_max,
+                             pagina=random.randint(1,4))
+    raw += discover_pool(media_type,"vote_average.desc",genero,anio_min,anio_max,pagina=1)
+    seen, out = set(), []
+    for r in raw:
+        if r["id"] not in seen and r.get("poster_path"):
+            seen.add(r["id"])
+            out.append(normalizar_item(r, media_type))
+    random.shuffle(out)
+    return out
 
-    # Agregar resultados de búsqueda temática según mood
-    genero_map = {
-        "🍿 Pochoclera":    "28",   # acción
-        "🕵️ Intriga":       "53",   # thriller
-        "🎞️ Joya Oculta":   "18",   # drama
-        "👪 Familiar":      "10751",# familia
-        "🧠 Hechos Reales": "99",   # documental
-        "💔 Drama":         "18",   # drama
-        "😂 Comedia":       "35",   # comedia
-    }
-    if mood_nombre in genero_map:
-        candidatos_raw += tmdb_discover(
-            pagina=1, sort="vote_average.desc",
-            generos=genero_map[mood_nombre],
-            anio_min=anio_min, anio_max=anio_max,
-        )
+def generar_cola(usuario:str, mood:str, media_type:str,
+                 anio_min:int, anio_max:int, n:int=30) -> list:
+    """
+    Arma una cola priorizada de n ítems.
+    80% top score + 20% exploración aleatoria.
+    """
+    perfil   = obtener_perfil(usuario)
+    vistos   = ids_vistos(usuario)
+    mood_vec = MOOD_VECS[mood]
+    candidatos = fetch_candidatos(media_type, mood, anio_min, anio_max)
 
-    # Deduplicar y filtrar vistos
-    seen_ids = set()
-    candidatos = []
-    for p in candidatos_raw:
-        if p["id"] in seen_ids or p["id"] in vistos:
-            continue
-        if not p.get("poster_path"):
-            continue
-        seen_ids.add(p["id"])
-        candidatos.append(p)
-
-    if not candidatos:
-        return []
-
-    # ── Generar ADN para candidatos (usa cache Firebase) ──
-    # Solo procesar hasta 40 para no ser lento
-    random.shuffle(candidatos)
-    candidatos = candidatos[:40]
+    filtrados = [c for c in candidatos if c["id"] not in vistos][:50]
 
     scored = []
-    for p in candidatos:
-        anio    = (p.get("release_date") or "")[:4]
-        overview = p.get("overview", "")
-        # rareza = inversa de popularidad normalizada (0-10)
-        pop     = p.get("popularity", 50)
-        rareza  = max(0, 10 - min(pop / 100, 10))
-
-        adn = obtener_o_crear_adn(p["id"], p.get("title", ""), anio, overview)
+    for p in filtrados:
+        anio    = p["_anio"]
+        overview= p.get("overview","")
+        pop     = p.get("popularity",50)
+        rareza  = max(0, 10 - min(pop/100,10))
+        adn     = obtener_o_crear_adn(p["id"], p["_titulo"], anio, overview, p["_media"])
         p["_adn"] = adn
+        scored.append((score_item(perfil, adn, mood_vec, rareza), p))
 
-        score = score_pelicula(perfil, adn, mood_vec, rareza)
-        scored.append((score, p))
-
-    scored.sort(key=lambda x: -x[0])
-
-    # 80% top scored + 20% exploración
-    n_top   = max(1, int(n * 0.8))
-    n_extra = n - n_top
-
-    resultado = [p for _, p in scored[:n_top + 3]][:n_top]
-
-    # Exploración: tomar aleatoriamente del resto del pool
-    resto = [p for _, p in scored[n_top + 3:]]
-    if resto and n_extra > 0:
-        resultado += random.sample(resto, min(n_extra, len(resto)))
-
-    return resultado[:n]
+    scored.sort(key=lambda x:-x[0])
+    n_top  = max(1, int(n*0.8))
+    n_exp  = n - n_top
+    top    = [p for _,p in scored[:n_top+5]][:n_top]
+    resto  = [p for _,p in scored[n_top+5:]]
+    expl   = random.sample(resto, min(n_exp, len(resto))) if resto else []
+    return top + expl
 
 # ══════════════════════════════════════════════════════
 # LOGIN CON PIN
 # ══════════════════════════════════════════════════════
-def hash_pin(pin: str) -> str:
-    return hashlib.sha256(pin.encode()).hexdigest()
+def hash_pin(p): return hashlib.sha256(p.encode()).hexdigest()
 
 def pantalla_login():
-    _, col, _ = st.columns([1, 2, 1])
+    _,col,_ = st.columns([1,2,1])
     with col:
-        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown("<br>",unsafe_allow_html=True)
         st.markdown("# 🎬 QUEVER")
         st.markdown("##### Motor de afinidad cinematográfica")
         st.divider()
-
-        tab_e, tab_n = st.tabs(["🔑 Entrar", "✨ Crear perfil"])
-
+        tab_e, tab_n = st.tabs(["🔑 Entrar","✨ Crear perfil"])
         with tab_e:
             with st.form("login"):
                 nombre = st.text_input("Usuario")
-                pin    = st.text_input("PIN", type="password", max_chars=4)
-                ok     = st.form_submit_button("Entrar →", use_container_width=True)
+                pin    = st.text_input("PIN",type="password",max_chars=4)
+                ok     = st.form_submit_button("Entrar →",use_container_width=True)
             if ok:
-                if not nombre or not pin:
-                    st.warning("Completá los campos.")
+                if not nombre or not pin: st.warning("Completá los campos.")
                 else:
                     doc = db.collection("usuarios").document(nombre).get()
-                    if not doc.exists:
-                        st.error("Usuario no encontrado.")
-                    elif doc.to_dict().get("pin") != hash_pin(pin):
-                        st.error("PIN incorrecto.")
+                    if not doc.exists: st.error("Usuario no encontrado.")
+                    elif doc.to_dict().get("pin") != hash_pin(pin): st.error("PIN incorrecto.")
                     else:
                         st.session_state.usuario = nombre
-                        st.session_state.onboarding_done = doc.to_dict().get("onboarding", False)
+                        st.session_state.onboarding_done = doc.to_dict().get("onboarding",False)
                         st.rerun()
-
         with tab_n:
             with st.form("registro"):
                 nn  = st.text_input("Nombre")
-                np1 = st.text_input("PIN (4 dígitos)", type="password", max_chars=4)
-                np2 = st.text_input("Repetí el PIN",   type="password", max_chars=4)
-                reg = st.form_submit_button("Crear →", use_container_width=True)
+                np1 = st.text_input("PIN (4 dígitos)",type="password",max_chars=4)
+                np2 = st.text_input("Repetí el PIN",  type="password",max_chars=4)
+                reg = st.form_submit_button("Crear →",use_container_width=True)
             if reg:
-                if not nn or not np1:
-                    st.warning("Completá todo.")
-                elif len(np1) != 4 or not np1.isdigit():
-                    st.error("El PIN debe ser 4 dígitos numéricos.")
-                elif np1 != np2:
-                    st.error("Los PINes no coinciden.")
-                elif db.collection("usuarios").document(nn).get().exists:
-                    st.error("Ese nombre ya existe.")
+                if not nn or not np1: st.warning("Completá todo.")
+                elif len(np1)!=4 or not np1.isdigit(): st.error("PIN = 4 dígitos numéricos.")
+                elif np1!=np2: st.error("Los PINes no coinciden.")
+                elif db.collection("usuarios").document(nn).get().exists: st.error("Nombre ocupado.")
                 else:
                     db.collection("usuarios").document(nn).set({
-                        "pin": hash_pin(np1), "onboarding": False,
-                        "vector_pos": [5.0]*6, "vector_neg": [5.0]*6,
-                        "n_pos": 0, "n_neg": 0,
-                        "creado": firestore.SERVER_TIMESTAMP,
+                        "pin":hash_pin(np1),"onboarding":False,
+                        "vector_pos":[5.0]*6,"vector_neg":[5.0]*6,
+                        "n_pos":0,"n_neg":0,"creado":firestore.SERVER_TIMESTAMP,
                     })
                     st.session_state.usuario = nn
                     st.session_state.onboarding_done = False
@@ -515,141 +425,104 @@ def pantalla_login():
     st.stop()
 
 # ══════════════════════════════════════════════════════
-# ONBOARDING EMOCIONAL
+# ONBOARDING
 # ══════════════════════════════════════════════════════
 def pantalla_onboarding():
     st.markdown("## 🎬 CALIBRÁ TU PERFIL")
-    st.markdown("""
-    Calificá las películas que ya viste con tu reacción real.
-    **Saltá las que no conocés** — no hace falta verlas todas.
-    Con **6 calificaciones** el motor ya funciona bien.
-    """)
-
+    st.markdown("Calificá las que ya viste. **Saltá las que no conocés.** Con 6 calificaciones el motor arrancan.")
     if "ob_pool" not in st.session_state:
-        st.session_state.ob_pool        = peliculas_onboarding_pool()
-        st.session_state.ob_calificadas = 0
+        st.session_state.ob_pool  = peliculas_onboarding_pool()
+        st.session_state.ob_calif = 0
 
     pool  = st.session_state.ob_pool
-    calif = st.session_state.ob_calificadas
-
-    progreso = min(calif / 6, 1.0)
-    st.progress(progreso, text=f"{calif} calificaciones · necesitás al menos 6")
+    calif = st.session_state.ob_calif
+    st.progress(min(calif/6,1.0), text=f"{calif} calificaciones · mínimo 6")
 
     if calif >= 6:
-        if st.button("🚀 ¡Listo! Empezar a recomendar", type="primary", use_container_width=True):
-            db.collection("usuarios").document(st.session_state.usuario).update({"onboarding": True})
+        if st.button("🚀 Empezar →", type="primary", use_container_width=True):
+            db.collection("usuarios").document(st.session_state.usuario)\
+              .update({"onboarding":True})
             st.session_state.onboarding_done = True
             st.rerun()
-        st.caption("Podés seguir calificando para mejorar la precisión.")
 
     st.divider()
-
     cols = st.columns(4)
     for i, p in enumerate(pool):
-        key_done = f"ob_done_{p['id']}"
-        if st.session_state.get(key_done):
-            continue
-
-        with cols[i % 4]:
+        kd = f"ob_done_{p['id']}"
+        if st.session_state.get(kd): continue
+        with cols[i%4]:
+            media   = p.get("_media","movie")
+            titulo  = p.get("_titulo","")
+            anio    = p.get("_anio","")
+            overview= p.get("overview","")
             if p.get("poster_path"):
-                st.image(f"https://image.tmdb.org/t/p/w300{p['poster_path']}", use_container_width=True)
+                st.image(f"https://image.tmdb.org/t/p/w300{p['poster_path']}",use_container_width=True)
+            tag = "📺" if media=="tv" else "🎬"
+            st.markdown(f"**{tag} {titulo}** ({anio})")
 
-            anio = (p.get("release_date") or "")[:4]
-            st.markdown(f"**{p['title']}** ({anio})")
-
-            # Reacciones emocionales en lugar de estrellas genéricas
-            c1, c2 = st.columns(2)
-            c3, c4 = st.columns(2)
-
-            def votar_ob(pid, titulo, stars, overview, anio_str):
-                adn = obtener_o_crear_adn(pid, titulo, anio_str, overview)
-                registrar_voto(st.session_state.usuario, pid, titulo, stars, adn)
+            def votar_ob(pid,t,s,ov,a,m):
+                adn = obtener_o_crear_adn(pid,t,a,ov,m)
+                registrar_voto(st.session_state.usuario,pid,t,s,adn,m)
                 st.session_state[f"ob_done_{pid}"] = True
-                st.session_state.ob_calificadas += 1
+                st.session_state.ob_calif += 1
 
-            if c1.button("😍 Me encantó", key=f"ob_5_{p['id']}", use_container_width=True):
-                votar_ob(p["id"], p["title"], 5, p.get("overview",""), anio)
-                st.rerun()
-            if c2.button("👍 Buena",       key=f"ob_3_{p['id']}", use_container_width=True):
-                votar_ob(p["id"], p["title"], 3, p.get("overview",""), anio)
-                st.rerun()
-            if c3.button("😐 Meh",         key=f"ob_2_{p['id']}", use_container_width=True):
-                votar_ob(p["id"], p["title"], 2, p.get("overview",""), anio)
-                st.rerun()
-            if c4.button("😴 Me aburrió",  key=f"ob_1_{p['id']}", use_container_width=True):
-                votar_ob(p["id"], p["title"], 1, p.get("overview",""), anio)
-                st.rerun()
-
-            if st.button("⏭ No la vi",     key=f"ob_skip_{p['id']}", use_container_width=True):
-                st.session_state[f"ob_done_{p['id']}"] = True
-                st.rerun()
-
+            c1,c2 = st.columns(2); c3,c4 = st.columns(2)
+            if c1.button("😍",key=f"o5_{p['id']}",use_container_width=True):
+                votar_ob(p["id"],titulo,5,overview,anio,media); st.rerun()
+            if c2.button("👍",key=f"o3_{p['id']}",use_container_width=True):
+                votar_ob(p["id"],titulo,3,overview,anio,media); st.rerun()
+            if c3.button("😐",key=f"o2_{p['id']}",use_container_width=True):
+                votar_ob(p["id"],titulo,2,overview,anio,media); st.rerun()
+            if c4.button("😴",key=f"o1_{p['id']}",use_container_width=True):
+                votar_ob(p["id"],titulo,1,overview,anio,media); st.rerun()
+            if st.button("⏭ Saltar",key=f"osk_{p['id']}",use_container_width=True):
+                st.session_state[kd]=True; st.rerun()
             st.markdown("---")
-
     st.stop()
 
 # ══════════════════════════════════════════════════════
-# VERIFICAR SESIÓN
+# SESIÓN
 # ══════════════════════════════════════════════════════
-if "usuario" not in st.session_state:
-    pantalla_login()
-
+if "usuario" not in st.session_state: pantalla_login()
 usuario = st.session_state.usuario
-
-if not st.session_state.get("onboarding_done", False):
-    pantalla_onboarding()
+if not st.session_state.get("onboarding_done",False): pantalla_onboarding()
 
 # ══════════════════════════════════════════════════════
 # SIDEBAR
 # ══════════════════════════════════════════════════════
 with st.sidebar:
     st.markdown(f"## 👤 {usuario}")
-    perfil_u = obtener_perfil_usuario(usuario)
+    perfil_u = obtener_perfil(usuario)
     hist     = obtener_historial(usuario)
+    vistas   = len(hist)
+    favs     = sum(1 for h in hist if h.get("stars",0)>=4)
+    rechaz   = sum(1 for h in hist if h.get("stars",0)<=2)
+    ca,cb,cc = st.columns(3)
+    ca.metric("🎬",vistas,"vistas"); cb.metric("⭐",favs,"amadas"); cc.metric("👎",rechaz,"no gustó")
 
-    vistas    = len(hist)
-    favoritas = sum(1 for h in hist if h.get("stars", 0) >= 4)
-    rechazadas= sum(1 for h in hist if h.get("stars", 0) <= 2 and not h.get("descartada"))
-
-    ca, cb, cc = st.columns(3)
-    ca.metric("🎬", vistas,    "vistas")
-    cb.metric("⭐", favoritas, "amadas")
-    cc.metric("👎", rechazadas,"no gustó")
-
-    # Visualización del vector positivo del usuario
-    if perfil_u["n_pos"] >= 3:
-        st.divider()
-        st.caption("**Tu perfil de gusto actual:**")
+    if perfil_u["n_pos"]>=3:
+        st.divider(); st.caption("**Tu perfil:**")
         v = perfil_u["vector_pos"]
-        for i, dim in enumerate(DIMS):
-            val = v[i]
-            bar_color = "#f5a623" if val >= 7 else ("#4a9eff" if val >= 4 else "#444")
-            width = int(val * 10)
+        for i,dim in enumerate(DIMS):
+            val = v[i]; w = int(val*10)
+            col = "#f5a623" if val>=7 else ("#4a9eff" if val>=4 else "#333")
             st.markdown(
                 f"<div class='dim-label'>{DIMS_LABELS[dim]}</div>"
-                f"<div style='background:#222;border-radius:3px;height:5px;'>"
-                f"<div class='dna-bar' style='width:{width}%;background:{bar_color};'></div>"
-                f"</div>",
-                unsafe_allow_html=True,
-            )
+                f"<div style='background:#1a1a2a;border-radius:3px;height:5px;'>"
+                f"<div style='width:{w}%;height:5px;border-radius:3px;background:{col}'></div></div>",
+                unsafe_allow_html=True)
 
     st.divider()
-
     if st.checkbox("📋 Historial"):
-        if hist:
-            for h in sorted(hist, key=lambda x: x.get("stars",0), reverse=True)[:10]:
-                if h.get("descartada"):
-                    st.caption(f"🚫 {h['titulo']}")
-                else:
-                    s = h.get("stars", 0)
-                    st.caption(f"{'★'*s}{'☆'*(5-s)} {h['titulo']}")
-        else:
-            st.caption("Sin historial.")
-
+        for h in sorted(hist,key=lambda x:x.get("stars",0),reverse=True)[:12]:
+            tag = "📺" if h.get("media")=="tv" else "🎬"
+            if h.get("descartada"): st.caption(f"🚫 {tag} {h['titulo']}")
+            else:
+                s=h.get("stars",0)
+                st.caption(f"{'★'*s}{'☆'*(5-s)} {tag} {h['titulo']}")
     st.divider()
-    if st.button("🚪 Cerrar Sesión", use_container_width=True):
-        for k in list(st.session_state.keys()):
-            del st.session_state[k]
+    if st.button("🚪 Cerrar Sesión",use_container_width=True):
+        for k in list(st.session_state.keys()): del st.session_state[k]
         st.rerun()
 
 # ══════════════════════════════════════════════════════
@@ -657,151 +530,229 @@ with st.sidebar:
 # ══════════════════════════════════════════════════════
 st.markdown("# 🎯 ¿QUÉ PLAN HAY HOY?")
 
-# Selector de mood
-cols_mood = st.columns(len(MOOD_VECTORES))
-for i, (nombre, _) in enumerate(MOOD_VECTORES.items()):
-    activo = st.session_state.get("mood") == nombre
-    if cols_mood[i].button(nombre, use_container_width=True, type="primary" if activo else "secondary"):
+# Toggle Película / Serie
+col_toggle, _ = st.columns([2,5])
+with col_toggle:
+    media_sel = st.radio("Tipo de contenido:", ["🎬 Película","📺 Serie"],
+                         horizontal=True, label_visibility="collapsed")
+media_type = "movie" if "Película" in media_sel else "tv"
+
+st.markdown("---")
+
+# Mood
+cols_mood = st.columns(len(MOOD_VECS))
+for i,(nombre,_) in enumerate(MOOD_VECS.items()):
+    activo = st.session_state.get("mood")==nombre
+    if cols_mood[i].button(nombre,use_container_width=True,
+                           type="primary" if activo else "secondary"):
         st.session_state.mood = nombre
-        st.session_state.pop("resultados", None)
+        # Resetear cola al cambiar mood
+        st.session_state.pop("cola",None)
+        st.session_state.pop("mostrando",None)
 
 if "mood" in st.session_state:
-    st.success(f"Mood: **{st.session_state.mood}**")
+    st.success(f"Mood: **{st.session_state.mood}**  ·  Tipo: **{media_sel}**")
 
-st.divider()
-
-with st.expander("🔧 Filtros", expanded=True):
-    ca, cb = st.columns(2)
-    with ca:
-        anios = st.slider("📅 Años:", 1950, 2025, (1995, 2025))
-    with cb:
-        n_peli = st.select_slider("🎬 Cantidad:", options=[3, 6, 9], value=6)
+with st.expander("🔧 Filtros",expanded=False):
+    ca2,cb2 = st.columns(2)
+    with ca2: anios = st.slider("📅 Años:",1950,2025,(1990,2025))
+    with cb2: n_mostrar = st.select_slider("🎬 Cards visibles:",options=[3,6,9],value=6)
 
 # ══════════════════════════════════════════════════════
-# BOTÓN PRINCIPAL
+# SISTEMA DE COLA INFINITA
 # ══════════════════════════════════════════════════════
+# Estado de la cola en session_state:
+#   st.session_state.cola      → lista de items pendientes (buffer)
+#   st.session_state.mostrando → lista de items actualmente visibles (N slots)
+#   st.session_state.cola_params → parámetros con que se generó (para invalidar si cambian)
+
+def params_actuales():
+    return (st.session_state.get("mood",""), media_type,
+            anios[0], anios[1], usuario)
+
+def inicializar_cola():
+    with st.spinner("⚙️ Cargando recomendaciones..."):
+        cola = generar_cola(usuario, st.session_state["mood"],
+                            media_type, anios[0], anios[1], n=30)
+    st.session_state.cola        = cola
+    st.session_state.cola_params = params_actuales()
+    # Llenar slots iniciales
+    vistos = ids_vistos(usuario)
+    mostrando = []
+    while cola and len(mostrando) < n_mostrar:
+        item = cola.pop(0)
+        if item["id"] not in vistos:
+            mostrando.append(item)
+    st.session_state.mostrando = mostrando
+
+def reponer_slots():
+    """Saca ítems de la cola para llenar los slots vacíos."""
+    cola      = st.session_state.get("cola",[])
+    mostrando = st.session_state.get("mostrando",[])
+    vistos    = ids_vistos(usuario)
+    while cola and len(mostrando) < n_mostrar:
+        item = cola.pop(0)
+        if item["id"] not in vistos:
+            mostrando.append(item)
+    st.session_state.cola      = cola
+    st.session_state.mostrando = mostrando
+
+def necesita_mas_cola() -> bool:
+    return len(st.session_state.get("cola",[])) < COLA_MIN
+
+def recargar_cola_si_necesario():
+    if necesita_mas_cola() and st.session_state.get("mood"):
+        extra = generar_cola(usuario, st.session_state["mood"],
+                             media_type, anios[0], anios[1], n=20)
+        vistos = ids_vistos(usuario)
+        mostrando_ids = {p["id"] for p in st.session_state.get("mostrando",[])}
+        for e in extra:
+            if e["id"] not in vistos and e["id"] not in mostrando_ids:
+                st.session_state.cola.append(e)
+
+# Botón para arrancar (o reiniciar con nuevos params)
+params_cambiaron = st.session_state.get("cola_params") != params_actuales()
+
 if st.button("🚀 Recomendar", use_container_width=True, type="primary"):
     if "mood" not in st.session_state:
         st.warning("Elegí un mood primero.")
     else:
-        st.session_state.pop("descartadas_sesion", None)
-        with st.spinner("⚙️ Motor calculando afinidad..."):
-            resultados = recomendar_motor(
-                usuario,
-                st.session_state.mood,
-                anios[0], anios[1],
-                n=n_peli + 4,  # buffer
-            )
-        st.session_state.resultados = resultados
-        if not resultados:
-            st.error("Sin resultados. Ampliá el rango de años.")
-
-# ══════════════════════════════════════════════════════
-# RENDERIZADO
-# ══════════════════════════════════════════════════════
-if "descartadas_sesion" not in st.session_state:
-    st.session_state.descartadas_sesion = set()
-
-if st.session_state.get("resultados"):
-    st.divider()
-    st.markdown(f"### 🎬 PARA VOS, {usuario.upper()}")
-
-    vistos_ahora = ids_vistos(usuario)
-    a_mostrar = [
-        p for p in st.session_state.resultados
-        if p["id"] not in st.session_state.descartadas_sesion
-        and p["id"] not in vistos_ahora
-    ][:n_peli]
-
-    if not a_mostrar:
-        st.info("📭 Sin más resultados — pedí nuevas recomendaciones.")
-    else:
-        cols = st.columns(3)
-        for i, p in enumerate(a_mostrar):
-            adn  = p.get("_adn", {d: 5 for d in DIMS})
-            anio = (p.get("release_date") or "")[:4]
-            rating = p.get("vote_average", 0)
-
-            # Calcular match score real vs vector del usuario
-            perfil_u = obtener_perfil_usuario(usuario)
-            if perfil_u["n_pos"] >= 3:
-                sim = cosine_sim(perfil_u["vector_pos"], vec(adn))
-                match_pct = int(50 + sim * 50)  # escala 50-100%
-            else:
-                match_pct = random.randint(82, 95)
-
-            with cols[i % 3]:
-                if p.get("poster_path"):
-                    st.image(f"https://image.tmdb.org/t/p/w400{p['poster_path']}", use_container_width=True)
-
-                st.markdown(f"**{p['title']}** ({anio})")
-                st.markdown(
-                    f"<span class='match-gold'>🎯 {match_pct}% afinidad</span>"
-                    f"<span style='color:#555;font-size:12px;margin-left:8px'>⭐ {rating:.1f}</span>",
-                    unsafe_allow_html=True,
-                )
-
-                # Mini visualización del ADN de la película
-                with st.expander("🧬 ADN"):
-                    for dim in DIMS:
-                        val = adn.get(dim, 5)
-                        width = int(val * 10)
-                        bar_color = "#f5a623" if val >= 7 else ("#4a9eff" if val >= 4 else "#333")
-                        st.markdown(
-                            f"<div class='dim-label'>{DIMS_LABELS[dim]} {val}/10</div>"
-                            f"<div style='background:#1a1a2a;border-radius:3px;height:5px;margin-bottom:4px'>"
-                            f"<div style='width:{width}%;height:5px;border-radius:3px;background:{bar_color}'></div>"
-                            f"</div>",
-                            unsafe_allow_html=True,
-                        )
-
-                if p.get("overview"):
-                    with st.expander("📖 Sinopsis"):
-                        st.write(p["overview"][:280] + "..." if len(p.get("overview","")) > 280 else p["overview"])
-
-                # Acciones
-                key_v = f"visto_{p['id']}"
-                if key_v not in st.session_state:
-                    c1, c2, c3 = st.columns(3)
-                    if c1.button("✅ Vista",  key=f"v_{p['id']}", use_container_width=True):
-                        st.session_state[key_v] = "calificar"
-                        st.rerun()
-                    if c2.button("⏭️ Saltar", key=f"s_{p['id']}", use_container_width=True):
-                        st.session_state.descartadas_sesion.add(p["id"])
-                        st.rerun()
-                    if c3.button("🚫 Nunca",  key=f"n_{p['id']}", use_container_width=True):
-                        registrar_descarte(usuario, p["id"], p["title"], adn)
-                        st.session_state.descartadas_sesion.add(p["id"])
-                        st.toast(f"'{p['title']}' descartada.", icon="🚫")
-                        st.rerun()
-
-                elif st.session_state[key_v] == "calificar":
-                    st.markdown("**¿Cómo fue?**")
-                    ca2, cb2 = st.columns(2)
-                    cc2, cd2 = st.columns(2)
-
-                    def votar(pid, titulo, stars, movie_adn):
-                        registrar_voto(usuario, pid, titulo, stars, movie_adn)
-                        icons = {5:"🎉",4:"⭐",3:"👍",2:"📝",1:"📝"}
-                        msgs  = {5:"¡Obra maestra!",4:"¡Favorita!",3:"Guardada.",2:"La IA aprende.",1:"La IA aprende."}
-                        st.toast(f"{msgs[stars]} '{titulo}'", icon=icons[stars])
-                        del st.session_state[f"visto_{pid}"]
-                        st.session_state.descartadas_sesion.add(pid)
-
-                    if ca2.button("😍 Me encantó", key=f"r5_{p['id']}", use_container_width=True):
-                        votar(p["id"], p["title"], 5, adn); st.rerun()
-                    if cb2.button("👍 Buena",       key=f"r3_{p['id']}", use_container_width=True):
-                        votar(p["id"], p["title"], 3, adn); st.rerun()
-                    if cc2.button("😐 Meh",         key=f"r2_{p['id']}", use_container_width=True):
-                        votar(p["id"], p["title"], 2, adn); st.rerun()
-                    if cd2.button("😴 Me aburrió",  key=f"r1_{p['id']}", use_container_width=True):
-                        votar(p["id"], p["title"], 1, adn); st.rerun()
-                    if st.button("↩️ Cancelar", key=f"cancel_{p['id']}"):
-                        del st.session_state[key_v]; st.rerun()
-
-                st.markdown("---")
-
-    st.divider()
-    if st.button("🔄 Nuevas recomendaciones", use_container_width=True):
-        st.session_state.pop("resultados", None)
+        inicializar_cola()
         st.rerun()
+elif params_cambiaron and "mostrando" in st.session_state:
+    # Parámetros cambiaron → reset silencioso
+    st.session_state.pop("cola",None)
+    st.session_state.pop("mostrando",None)
+
+# ══════════════════════════════════════════════════════
+# RENDERIZADO DE CARDS
+# ══════════════════════════════════════════════════════
+if st.session_state.get("mostrando"):
+    reponer_slots()
+    if necesita_mas_cola():
+        recargar_cola_si_necesario()
+
+    mostrando = st.session_state.mostrando
+    st.divider()
+    st.markdown(f"### PARA VOS, {usuario.upper()}")
+
+    perfil_u = obtener_perfil(usuario)
+    cols = st.columns(3)
+
+    for i, p in enumerate(list(mostrando)):  # list() para evitar mutación durante iteración
+        adn    = p.get("_adn",{d:5 for d in DIMS})
+        titulo = p["_titulo"]
+        anio_p = p["_anio"]
+        media  = p["_media"]
+        rating = p.get("vote_average",0)
+
+        # Score real vs vector usuario
+        if perfil_u["n_pos"]>=3:
+            sim = cosine(perfil_u["vector_pos"],vec(adn))
+            match_pct = int(50+sim*50)
+        else:
+            match_pct = random.randint(80,94)
+
+        with cols[i%3]:
+            tag = "📺 Serie" if media=="tv" else "🎬 Película"
+            st.caption(tag)
+
+            if p.get("poster_path"):
+                st.image(f"https://image.tmdb.org/t/p/w400{p['poster_path']}",use_container_width=True)
+
+            st.markdown(f"**{titulo}** ({anio_p})")
+            st.markdown(
+                f"<span class='match-gold'>🎯 {match_pct}% afinidad</span>"
+                f"<span style='color:#555;font-size:12px;margin-left:8px'>⭐ {rating:.1f}</span>",
+                unsafe_allow_html=True)
+
+            # ── TRAILER ───────────────────────────────
+            with st.expander("▶️ Trailer"):
+                trailer_key = get_trailer_key(p["id"], media)
+                if trailer_key:
+                    # idioma original + subtítulos en español
+                    url = (f"https://www.youtube.com/embed/{trailer_key}"
+                           f"?cc_load_policy=1&cc_lang_pref=es&hl=es"
+                           f"&rel=0&modestbranding=1")
+                    st.components.v1.iframe(url, height=220)
+                else:
+                    st.caption("Trailer no disponible para esta película.")
+
+            # ── ADN ───────────────────────────────────
+            with st.expander("🧬 ADN"):
+                for dim in DIMS:
+                    val = adn.get(dim,5); w = int(val*10)
+                    bar = "#f5a623" if val>=7 else ("#4a9eff" if val>=4 else "#333")
+                    st.markdown(
+                        f"<div class='dim-label'>{DIMS_LABELS[dim]} {val}/10</div>"
+                        f"<div style='background:#1a1a2a;border-radius:3px;height:5px;margin-bottom:4px'>"
+                        f"<div style='width:{w}%;height:5px;border-radius:3px;background:{bar}'></div></div>",
+                        unsafe_allow_html=True)
+
+            # ── SINOPSIS ──────────────────────────────
+            if p.get("overview"):
+                with st.expander("📖 Sinopsis"):
+                    txt = p["overview"]
+                    st.write(txt[:280]+"..." if len(txt)>280 else txt)
+
+            st.markdown("---")
+
+            # ── ACCIONES ──────────────────────────────
+            key_v = f"visto_{media}_{p['id']}"
+
+            def quitar_de_mostrando(pid):
+                st.session_state.mostrando = [
+                    x for x in st.session_state.mostrando if x["id"]!=pid
+                ]
+
+            if key_v not in st.session_state:
+                c1,c2,c3 = st.columns(3)
+
+                # ✅ Ya la vi → pide reacción
+                if c1.button("✅ Vista",key=f"v_{media}_{p['id']}",use_container_width=True):
+                    st.session_state[key_v]="calificar"; st.rerun()
+
+                # ⏭ Saltar → sale de la pantalla actual, NO se guarda
+                #   Puede volver a aparecer en otra sesión
+                if c2.button("⏭️ Saltar",key=f"s_{media}_{p['id']}",use_container_width=True):
+                    quitar_de_mostrando(p["id"]); st.rerun()
+
+                # 🚫 Nunca → descarte PERMANENTE
+                #   1. Nunca vuelve a aparecer (guardado en Firebase)
+                #   2. Actualiza vector NEGATIVO → el motor penaliza películas similares
+                if c3.button("🚫 Nunca",key=f"n_{media}_{p['id']}",use_container_width=True):
+                    registrar_descarte_permanente(usuario,p["id"],titulo,adn,media)
+                    quitar_de_mostrando(p["id"])
+                    st.toast(f"'{titulo}' descartada. El motor aprende a evitar este tipo de contenido.",icon="🚫")
+                    st.rerun()
+
+            elif st.session_state[key_v]=="calificar":
+                st.markdown("**¿Cómo fue?**")
+                ca3,cb3 = st.columns(2); cc3,cd3 = st.columns(2)
+
+                def votar_main(pid,t,s,a_d,m):
+                    registrar_voto(usuario,pid,t,s,a_d,m)
+                    msgs={5:"¡Obra maestra!",4:"¡Favorita!",3:"Guardada.",2:"La IA aprende.",1:"La IA aprende."}
+                    icons={5:"🎉",4:"⭐",3:"👍",2:"📝",1:"📝"}
+                    st.toast(f"{msgs[s]} '{t}'",icon=icons[s])
+                    del st.session_state[f"visto_{m}_{pid}"]
+                    quitar_de_mostrando(pid)
+
+                if ca3.button("😍 Me encantó",key=f"r5_{media}_{p['id']}",use_container_width=True):
+                    votar_main(p["id"],titulo,5,adn,media); st.rerun()
+                if cb3.button("👍 Buena",      key=f"r3_{media}_{p['id']}",use_container_width=True):
+                    votar_main(p["id"],titulo,3,adn,media); st.rerun()
+                if cc3.button("😐 Meh",        key=f"r2_{media}_{p['id']}",use_container_width=True):
+                    votar_main(p["id"],titulo,2,adn,media); st.rerun()
+                if cd3.button("😴 Me aburrió", key=f"r1_{media}_{p['id']}",use_container_width=True):
+                    votar_main(p["id"],titulo,1,adn,media); st.rerun()
+                if st.button("↩️ Cancelar",    key=f"cx_{media}_{p['id']}"):
+                    del st.session_state[key_v]; st.rerun()
+
+    # Indicador de cola
+    restantes = len(st.session_state.get("cola",[]))
+    st.divider()
+    colx,coly = st.columns([3,1])
+    colx.caption(f"📋 {restantes} más en cola · el motor sigue generando en segundo plano")
+    if coly.button("🔄 Nueva tanda",use_container_width=True):
+        st.session_state.pop("cola",None); st.session_state.pop("mostrando",None); st.rerun()
